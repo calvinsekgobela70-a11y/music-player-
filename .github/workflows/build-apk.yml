@@ -35,24 +35,13 @@ jobs:
             echo
             grep -E "error:|FAILED|Execution failed|What went wrong|Caused by" build.log | head -n 40
           } >> "$GITHUB_STEP_SUMMARY"
-          {
-            echo "# Ceecept build failure log"
-            echo
-            echo "## errors"
-            grep -E "error:|FAILED|Execution failed|What went wrong|Caused by|Exception" build.log | head -n 100
-            echo
-            echo "## tail"
-            tail -n 150 build.log
-          } > ci-build.log
-          git config user.name "ceecept-ci"
-          git config user.email "ceecept-ci@users.noreply.github.com"
-          git add ci-build.log
-          git commit -m "ci: build failure log [skip ci]" || echo "nothing to commit"
-          git push origin "HEAD:${{ github.ref_name }}" || {
-            git fetch --unshallow
-            git pull --rebase origin "${{ github.ref_name }}"
-            git push origin "HEAD:${{ github.ref_name }}"
-          }
+          grep -E "error:|e: |FAILED|Execution failed|What went wrong|Caused by" build.log \
+            | head -n 12 \
+            | while IFS= read -r line; do
+                line="$(printf '%s' "$line" | head -c 800 | tr '\n' ' ')"
+                echo "::error::$line"
+              done
+          echo "::warning::tail: $(tail -n 3 build.log | tr '\n' ' ' | head -c 800)"
 
       - name: Upload build log
         if: failure()

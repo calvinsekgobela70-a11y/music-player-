@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -97,7 +98,7 @@ fun BouncyIconButton(
     content: @Composable () -> Unit
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by androidx.compose.foundation.interaction.collectIsPressedAsState(interaction)
+    val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) pressedScale else 1f,
         animationSpec = spring(
@@ -138,7 +139,7 @@ fun PlayPauseButton(
     size: Dp = 72.dp
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by androidx.compose.foundation.interaction.collectIsPressedAsState(interaction)
+    val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) 0.88f else 1f,
         animationSpec = CeeceptMotion.bouncy(),
@@ -191,7 +192,7 @@ fun SkipButton(
     size: Dp = 40.dp
 ) {
     val interaction = remember { MutableInteractionSource() }
-    val pressed by androidx.compose.foundation.interaction.collectIsPressedAsState(interaction)
+    val pressed by interaction.collectIsPressedAsState()
     val nudge by animateFloatAsState(
         targetValue = if (pressed) (if (forward) 10f else -10f) else 0f,
         animationSpec = spring(
