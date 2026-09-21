@@ -34,9 +34,18 @@ jobs:
         run: |
           echo '### :x: Build failed — tail of build.log' > fail.md
           echo '```' >> fail.md
-          tail -n 120 build.log >> fail.md
+          grep -E "error:|FAILED|Execution failed|What went wrong|Caused by" build.log | head -n 60 >> fail.md
+          echo '... (tail) ...' >> fail.md
+          tail -n 60 build.log >> fail.md
           echo '```' >> fail.md
-          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@fail.md || true
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@fail.md
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
 
       - name: Rename APK
         run: |
