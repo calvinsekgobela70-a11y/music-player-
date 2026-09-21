@@ -146,12 +146,19 @@ class MusicRepository(
     private fun String.normalizeArtist(): String =
         if (equals("<unknown>", ignoreCase = true)) "Unknown Artist" else this
 
-    /** Album artwork thumbnail, memory-cached. Null when the file has no embedded art. */
+    /**
+     * Album artwork, memory-cached. Probes every offline source in order of
+     * reliability: the file's own tags, then the MediaProvider thumbnail, then
+     * the legacy album-art URI (still served on many devices, all API levels).
+     * Null only when the album genuinely carries no picture.
+     */
     suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? {
         artCache.get(track.albumId)?.let { return it }
         synchronized(noArt) { if (noArt.contains(track.albumId)) return null }
         return withContext(Dispatchers.IO) {
-            val bmp = providerThumbnail(track, sizePx) ?: embeddedPicture(track)
+            val bmp = embeddedPicture(track, sizePx)
+                ?: providerThumbnail(track, sizePx)
+                ?: legacyAlbumArt(track)
             if (bmp != null) {
                 artCache.put(track.albumId, bmp)
             } else {
@@ -161,35 +168,57 @@ class MusicRepository(
         }
     }
 
-    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing for audio. */
-    private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
-        if (Build.VERSION.SDK_INT >= 29) {
-            context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
-        } else {
-            @Suppress("DEPRECATION")
-            val artUri = ContentUris.withAppendedId(
-                Uri.parse("content://media/external/audio/albumart"), track.albumId
-            )
-            context.contentResolver.openInputStream(artUri)?.use {
-                android.graphics.BitmapFactory.decodeStream(it)
-            }
-        }
-    } catch (e: Exception) {
-        null
-    }
-
     /** Reads art straight out of the file's tags (ID3 APIC / FLAC picture / MP4 covr). */
-    private fun embeddedPicture(track: Track): Bitmap? = try {
+    private fun embeddedPicture(track: Track, sizePx: Int): Bitmap? = try {
         val retriever = android.media.MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, track.uri)
-            retriever.embeddedPicture?.let { bytes ->
-                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            }
+            retriever.embeddedPicture?.let { bytes -> decodeSampled(bytes, sizePx) }
         } finally {
             retriever.release()
         }
     } catch (e: Exception) {
         null
+    }
+
+    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing for audio. */
+    private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29) {
+            context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
+        } else {
+            legacyAlbumArt(track)
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** content://media/external/audio/albumart — works on most devices regardless of API level. */
+    private fun legacyAlbumArt(track: Track): Bitmap? = try {
+        @Suppress("DEPRECATION")
+        val artUri = ContentUris.withAppendedId(
+            Uri.parse("content://media/external/audio/albumart"), track.albumId
+        )
+        context.contentResolver.openInputStream(artUri)?.use { stream ->
+            android.graphics.BitmapFactory.decodeStream(stream)
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Downsamples embedded art so list rows never hold multi-megapixel bitmaps. */
+    private fun decodeSampled(bytes: ByteArray, sizePx: Int): Bitmap? {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (
+            bounds.outWidth / (sample * 2) >= sizePx &&
+            bounds.outHeight / (sample * 2) >= sizePx
+        ) {
+            sample *= 2
+        }
+        return android.graphics.BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+        )
     }
 }

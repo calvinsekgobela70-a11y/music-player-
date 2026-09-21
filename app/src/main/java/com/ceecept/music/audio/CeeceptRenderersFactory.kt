@@ -20,6 +20,9 @@ class CeeceptRenderersFactory(
     private val engine: AudioEngine
 ) : DefaultRenderersFactory(context) {
 
+    /** Converts the float DSP output to 16-bit before the sink. */
+    private val pcm16Tail = FloatToPcm16Processor()
+
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,
@@ -29,7 +32,7 @@ class CeeceptRenderersFactory(
             .setEnableFloatOutput(false)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
             .setAudioProcessors(
-                arrayOf(engine.eq, engine.dynamics, engine.spatial)
+                arrayOf(engine.eq, engine.dynamics, engine.spatial, pcm16Tail)
             )
             .build()
     }
