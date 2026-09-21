@@ -62,7 +62,7 @@ class AudioEngine(
     private var saveJob: Job? = null
 
     init {
-        appScope.launch { restore() }
+        appScope.launch { runCatching { restore() } }
     }
 
     // ---------- Equalizer ----------

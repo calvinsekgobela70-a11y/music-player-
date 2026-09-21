@@ -179,6 +179,7 @@ object CeeceptMotion {
 @Composable
 fun CeeceptTheme(
     mode: ThemeMode = ThemeMode.SYSTEM,
+    useCustomFont: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val dark = when (mode) {
@@ -188,7 +189,7 @@ fun CeeceptTheme(
     }
     MaterialTheme(
         colorScheme = if (dark) DarkScheme else LightScheme,
-        typography = CeeceptTypography,
+        typography = if (useCustomFont) CeeceptTypography else androidx.compose.material3.Typography(),
         shapes = CeeceptShapes,
         content = content
     )

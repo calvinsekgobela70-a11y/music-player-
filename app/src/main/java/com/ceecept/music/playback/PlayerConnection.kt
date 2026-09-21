@@ -109,8 +109,9 @@ class PlayerConnection(
     }
 
     private fun connect() {
-        val token = SessionToken(appContext, ComponentName(appContext, PlayerService::class.java))
-        val future = MediaController.Builder(appContext, token).buildAsync()
+        try {
+            val token = SessionToken(appContext, ComponentName(appContext, PlayerService::class.java))
+            val future = MediaController.Builder(appContext, token).buildAsync()
         future.addListener(
             {
                 try {
@@ -129,6 +130,9 @@ class PlayerConnection(
             },
             MoreExecutors.directExecutor()
         )
+        } catch (e: Exception) {
+            com.ceecept.music.CrashReporter.recordSoft(appContext, "PlayerConnection.connect", e)
+        }
     }
 
     private fun resolveCurrent(item: MediaItem?) {

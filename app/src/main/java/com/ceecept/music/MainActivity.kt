@@ -14,8 +14,16 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleViewIntent(intent)
+        // Validate bundled fonts eagerly; fall back to system fonts if broken.
+        val useCustomFont = try {
+            resources.getFont(R.font.inter_regular)
+            true
+        } catch (e: Exception) {
+            CrashReporter.recordSoft(this, "font-preload", e)
+            false
+        }
         setContent {
-            CeeceptRoot(app = ceeceptApp())
+            CeeceptRoot(app = ceeceptApp(), useCustomFont = useCustomFont)
         }
     }
 

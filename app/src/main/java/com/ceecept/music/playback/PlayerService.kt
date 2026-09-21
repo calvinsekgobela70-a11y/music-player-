@@ -25,6 +25,17 @@ class PlayerService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        try {
+            startEngine()
+        } catch (e: Exception) {
+            // Never kill the whole app if the playback engine fails to start;
+            // record it so the crash-report dialog can show the cause.
+            com.ceecept.music.CrashReporter.recordSoft(this, "PlayerService.onCreate", e)
+            stopSelf()
+        }
+    }
+
+    private fun startEngine() {
         val app = applicationContext as CeeceptApp
         val renderers = CeeceptRenderersFactory(this, app.engine)
         val exo = ExoPlayer.Builder(this, renderers)

@@ -28,8 +28,10 @@ class UiPrefs(private val context: Context, scope: CoroutineScope) {
 
     init {
         scope.launch {
-            val name = context.uiDataStore.data.first()[Keys.THEME] ?: ThemeMode.SYSTEM.name
-            _themeMode.value = runCatching { ThemeMode.valueOf(name) }.getOrDefault(ThemeMode.SYSTEM)
+            runCatching {
+                val name = context.uiDataStore.data.first()[Keys.THEME] ?: ThemeMode.SYSTEM.name
+                _themeMode.value = runCatching { ThemeMode.valueOf(name) }.getOrDefault(ThemeMode.SYSTEM)
+            }
         }
     }
 
@@ -46,6 +48,11 @@ class UiPrefs(private val context: Context, scope: CoroutineScope) {
 }
 
 class CeeceptApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        CrashReporter.install(this)
+    }
+
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val engine: AudioEngine by lazy { AudioEngine(this, applicationScope) }
