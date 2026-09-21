@@ -3,6 +3,8 @@ package com.ceecept.music.playback
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -13,6 +15,7 @@ import com.ceecept.music.data.MusicRepository
 import com.ceecept.music.data.Track
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +26,11 @@ import kotlinx.coroutines.launch
 /**
  * UI-facing bridge to [PlayerService]. Holds the MediaController, mirrors
  * player state into StateFlows and exposes transport controls.
+ *
+ * IMPORTANT: every MediaController method must be called on the main
+ * (application) thread — MediaController throws IllegalStateException
+ * otherwise. All access here is therefore pinned to Dispatchers.Main /
+ * a main-thread Handler, and only plain state reads cross threads.
  */
 class PlayerConnection(
     context: Context,
@@ -30,6 +38,7 @@ class PlayerConnection(
     appScope: CoroutineScope
 ) {
     private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller.asStateFlow()
@@ -64,6 +73,7 @@ class PlayerConnection(
     private val _queueSize = MutableStateFlow(0)
     val queueSize: StateFlow<Int> = _queueSize.asStateFlow()
 
+    /** MediaController delivers these on the main thread. */
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _isPlaying.value = isPlaying
@@ -99,7 +109,8 @@ class PlayerConnection(
 
     init {
         connect()
-        appScope.launch {
+        // Position ticker — MUST run on Main: it touches MediaController.
+        appScope.launch(Dispatchers.Main) {
             while (isActive) {
                 delay(250)
                 val c = _controller.value
@@ -112,27 +123,37 @@ class PlayerConnection(
         try {
             val token = SessionToken(appContext, ComponentName(appContext, PlayerService::class.java))
             val future = MediaController.Builder(appContext, token).buildAsync()
-        future.addListener(
-            {
-                try {
-                    val controller = future.get()
-                    controller.addListener(listener)
-                    _controller.value = controller
-                    _isPlaying.value = controller.isPlaying
-                    _playbackState.value = controller.playbackState
-                    _shuffleOn.value = controller.shuffleModeEnabled
-                    _repeatMode.value = controller.repeatMode
-                    _queueSize.value = controller.mediaItemCount
-                    resolveCurrent(controller.currentMediaItem)
-                    syncPosition()
-                } catch (e: Exception) {
-                }
-            },
-            MoreExecutors.directExecutor()
-        )
+            future.addListener(
+                {
+                    try {
+                        // get() returns immediately here (future is complete);
+                        // then hop to Main before touching the controller.
+                        val controller = future.get()
+                        mainHandler.post { onControllerReady(controller) }
+                    } catch (e: Exception) {
+                        com.ceecept.music.CrashReporter.recordSoft(
+                            appContext, "PlayerConnection.ready", e
+                        )
+                    }
+                },
+                MoreExecutors.directExecutor()
+            )
         } catch (e: Exception) {
             com.ceecept.music.CrashReporter.recordSoft(appContext, "PlayerConnection.connect", e)
         }
+    }
+
+    /** Runs on the main thread. */
+    private fun onControllerReady(controller: MediaController) {
+        controller.addListener(listener)
+        _controller.value = controller
+        _isPlaying.value = controller.isPlaying
+        _playbackState.value = controller.playbackState
+        _shuffleOn.value = controller.shuffleModeEnabled
+        _repeatMode.value = controller.repeatMode
+        _queueSize.value = controller.mediaItemCount
+        resolveCurrent(controller.currentMediaItem)
+        syncPosition()
     }
 
     private fun resolveCurrent(item: MediaItem?) {
@@ -151,66 +172,77 @@ class PlayerConnection(
         _currentIndex.value = _controller.value?.currentMediaItemIndex ?: 0
     }
 
+    /** Must be called on the main thread (reads MediaController position). */
     private fun syncPosition() {
         val c = _controller.value ?: return
         _positionMs.value = c.currentPosition.coerceAtLeast(0)
         _durationMs.value = c.duration.let { if (it < 0) 0 else it }
     }
 
-    // ---------- Transport ----------
+    /** Posts transport actions to the main thread so callers are safe from anywhere. */
+    private fun onMain(block: (MediaController) -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            _controller.value?.let(block)
+        } else {
+            mainHandler.post { _controller.value?.let(block) }
+        }
+    }
+
+    // ---------- Transport (all main-thread safe) ----------
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
-        val c = _controller.value ?: return
         if (tracks.isEmpty()) return
-        c.setMediaItems(tracks.map { it.toMediaItem() })
-        c.seekToDefaultPosition(startIndex.coerceIn(0, tracks.lastIndex))
-        c.prepare()
-        c.play()
+        onMain { c ->
+            c.setMediaItems(tracks.map { it.toMediaItem() })
+            c.seekToDefaultPosition(startIndex.coerceIn(0, tracks.lastIndex))
+            c.prepare()
+            c.play()
+        }
     }
 
     fun playExternal(uri: Uri, title: String) {
-        val c = _controller.value ?: return
-        val item = MediaItem.Builder()
-            .setMediaId("ext:$uri")
-            .setUri(uri)
-            .setMediaMetadata(
-                MediaMetadata.Builder().setTitle(title).setArtist("External file").build()
-            )
-            .build()
-        c.setMediaItem(item)
-        c.prepare()
-        c.play()
+        onMain { c ->
+            val item = MediaItem.Builder()
+                .setMediaId("ext:$uri")
+                .setUri(uri)
+                .setMediaMetadata(
+                    MediaMetadata.Builder().setTitle(title).setArtist("External file").build()
+                )
+                .build()
+            c.setMediaItem(item)
+            c.prepare()
+            c.play()
+        }
     }
 
     fun togglePlayPause() {
-        val c = _controller.value ?: return
-        if (c.isPlaying) c.pause() else c.play()
+        onMain { c -> if (c.isPlaying) c.pause() else c.play() }
     }
 
     fun next() {
-        _controller.value?.seekToNextMediaItem()
+        onMain { it.seekToNextMediaItem() }
     }
 
     fun previous() {
-        _controller.value?.seekToPreviousMediaItem()
+        onMain { it.seekToPreviousMediaItem() }
     }
 
     fun seekTo(positionMs: Long) {
-        _controller.value?.seekTo(positionMs.coerceAtLeast(0))
         _positionMs.value = positionMs.coerceAtLeast(0)
+        onMain { it.seekTo(positionMs.coerceAtLeast(0)) }
     }
 
     fun toggleShuffle() {
-        val c = _controller.value ?: return
-        c.shuffleModeEnabled = !c.shuffleModeEnabled
+        onMain { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled }
     }
 
     fun cycleRepeat() {
-        val c = _controller.value ?: return
-        c.repeatMode = when (c.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
+        onMain { c ->
+            c.repeatMode = when (c.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
         }
     }
 
