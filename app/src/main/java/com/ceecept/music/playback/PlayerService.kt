@@ -6,6 +6,8 @@ import android.provider.OpenableColumns
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.MediaMetadata
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
@@ -49,6 +51,15 @@ class PlayerService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setHandleAudioBecomingNoisy(true)
             .build()
+        exo.addListener(object : Player.Listener {
+            override fun onPlayerError(error: PlaybackException) {
+                // Surface playback failures in the in-app crash report so a
+                // silent stop is diagnosable from the device.
+                com.ceecept.music.CrashReporter.recordSoft(
+                    this@PlayerService, "ExoPlayer.error(${error.errorCode})", error
+                )
+            }
+        })
         player = exo
         session = MediaSession.Builder(this, exo).build()
         addSession(session!!)

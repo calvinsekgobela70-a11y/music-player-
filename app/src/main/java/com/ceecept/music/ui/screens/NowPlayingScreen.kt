@@ -187,9 +187,11 @@ fun NowPlayingScreen(
             ArtworkView(
                 track = track,
                 repository = app.repository,
+                // fill = true: the art (or its gradient placeholder) always
+                // occupies the free space, so the layout never collapses.
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f, fill = false),
+                    .weight(1f),
                 cornerRadius = 24.dp,
                 thumbSize = 1024
             )

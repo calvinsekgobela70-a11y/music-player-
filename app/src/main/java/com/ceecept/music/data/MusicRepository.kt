@@ -33,6 +33,9 @@ class MusicRepository(
 
     private val artCache = LruCache<Long, Bitmap>(64)
 
+    /** Albums already probed that have no extractable art — avoids re-decoding per row. */
+    private val noArt = mutableSetOf<Long>()
+
     fun findById(id: Long): Track? = synchronized(byId) { byId[id] }
 
     fun artists(): List<ArtistEntry> {
@@ -146,29 +149,47 @@ class MusicRepository(
     /** Album artwork thumbnail, memory-cached. Null when the file has no embedded art. */
     suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? {
         artCache.get(track.albumId)?.let { return it }
+        synchronized(noArt) { if (noArt.contains(track.albumId)) return null }
         return withContext(Dispatchers.IO) {
-            try {
-                if (Build.VERSION.SDK_INT >= 29) {
-                    val bmp = context.contentResolver.loadThumbnail(
-                        track.uri, Size(sizePx, sizePx), null
-                    )
-                    artCache.put(track.albumId, bmp)
-                    bmp
-                } else {
-                    @Suppress("DEPRECATION")
-                    val artUri = ContentUris.withAppendedId(
-                        Uri.parse("content://media/external/audio/albumart"), track.albumId
-                    )
-                    context.contentResolver.openInputStream(artUri)?.use {
-                        android.graphics.BitmapFactory.decodeStream(it)?.also { bmp ->
-                            artCache.put(track.albumId, bmp)
-                            bmp
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                null
+            val bmp = providerThumbnail(track, sizePx) ?: embeddedPicture(track)
+            if (bmp != null) {
+                artCache.put(track.albumId, bmp)
+            } else {
+                synchronized(noArt) { noArt.add(track.albumId) }
+            }
+            bmp
+        }
+    }
+
+    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing for audio. */
+    private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29) {
+            context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
+        } else {
+            @Suppress("DEPRECATION")
+            val artUri = ContentUris.withAppendedId(
+                Uri.parse("content://media/external/audio/albumart"), track.albumId
+            )
+            context.contentResolver.openInputStream(artUri)?.use {
+                android.graphics.BitmapFactory.decodeStream(it)
             }
         }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Reads art straight out of the file's tags (ID3 APIC / FLAC picture / MP4 covr). */
+    private fun embeddedPicture(track: Track): Bitmap? = try {
+        val retriever = android.media.MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, track.uri)
+            retriever.embeddedPicture?.let { bytes ->
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }
+        } finally {
+            retriever.release()
+        }
+    } catch (e: Exception) {
+        null
     }
 }

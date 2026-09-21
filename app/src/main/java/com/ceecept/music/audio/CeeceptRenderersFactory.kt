@@ -7,16 +7,18 @@ import androidx.media3.exoplayer.audio.DefaultAudioSink
 
 /**
  * Injects the Ceecept DSP chain (16-band EQ -> multiband dynamics + limiter ->
- * 3D spatializer) into ExoPlayer's audio path with float precision end to end.
+ * 3D spatializer) into ExoPlayer's audio path.
+ *
+ * The processors run in 32-bit float internally, but the sink delivers 16-bit
+ * PCM to the AudioTrack: float output tracks are not reliable on every device
+ * (some OEM firmware accepts the float track and plays silence, or fails
+ * writes mid-stream). The sink resamples the float chain output to 16-bit
+ * automatically, which is the maximally compatible path.
  */
 class CeeceptRenderersFactory(
     context: Context,
     private val engine: AudioEngine
 ) : DefaultRenderersFactory(context) {
-
-    init {
-        setEnableAudioFloatOutput(true)
-    }
 
     override fun buildAudioSink(
         context: Context,
@@ -24,7 +26,7 @@ class CeeceptRenderersFactory(
         enableAudioTrackPlaybackParams: Boolean
     ): AudioSink {
         return DefaultAudioSink.Builder(context)
-            .setEnableFloatOutput(true)
+            .setEnableFloatOutput(false)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
             .setAudioProcessors(
                 arrayOf(engine.eq, engine.dynamics, engine.spatial)
