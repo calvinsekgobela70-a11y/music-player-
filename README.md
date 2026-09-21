@@ -16,6 +16,9 @@ No account. No ads. No internet permission — your music never leaves your phon
 
 > The APK is a debug build, so Android will show the usual "unknown app" prompt on install. Tap
 > *Install anyway* — the app requests only audio-file access and requests no network permission.
+> When updating from one debug release to another, **uninstall the old version first**
+> (each CI build is signed with a fresh debug key, so Android will otherwise block the update
+> with an "app not installed" signature error).
 
 ## Features
 
