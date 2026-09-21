@@ -6,7 +6,6 @@ import androidx.media3.common.audio.BaseAudioProcessor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-private typealias AF = AudioProcessor.AudioFormat
 
 /**
  * 16-band parametric equalizer (RBJ peaking biquads, one cascade per channel).

@@ -10,7 +10,6 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-private typealias AF = AudioProcessor.AudioFormat
 
 /**
  * "Ceecept Immerse" 3D audio for headphones.

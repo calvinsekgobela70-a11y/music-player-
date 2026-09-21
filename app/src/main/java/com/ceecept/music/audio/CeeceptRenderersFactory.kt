@@ -21,11 +21,11 @@ class CeeceptRenderersFactory(
     override fun buildAudioSink(
         context: Context,
         enableFloatOutput: Boolean,
-        enableAudioOutputPlaybackParams: Boolean
+        enableAudioTrackPlaybackParams: Boolean
     ): AudioSink {
         return DefaultAudioSink.Builder(context)
             .setEnableFloatOutput(true)
-            .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+            .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
             .setAudioProcessors(
                 arrayOf(engine.eq, engine.dynamics, engine.spatial)
             )

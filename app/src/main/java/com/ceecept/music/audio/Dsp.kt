@@ -1,6 +1,10 @@
 package com.ceecept.music.audio
 
+import androidx.media3.common.audio.AudioProcessor
 import kotlin.math.PI
+
+/** Short alias for the Media3 audio format type, shared by all DSP processors. */
+typealias AF = AudioProcessor.AudioFormat
 import kotlin.math.cos
 import kotlin.math.log10
 import kotlin.math.sin

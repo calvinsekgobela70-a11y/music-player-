@@ -7,7 +7,6 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
 
-private typealias AF = AudioProcessor.AudioFormat
 
 /** Parameters for one compressor band. Immutable — swapped atomically from the UI thread. */
 data class BandParams(
