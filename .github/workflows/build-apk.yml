@@ -35,8 +35,8 @@ jobs:
             echo
             grep -E "error:|FAILED|Execution failed|What went wrong|Caused by" build.log | head -n 40
           } >> "$GITHUB_STEP_SUMMARY"
-          grep -E "error:|e: |FAILED|Execution failed|What went wrong|Caused by" build.log \
-            | head -n 12 \
+          grep -E "error:|e: |FAILED|Execution failed|What went wrong|Caused by|requires|Dependency '|compile against" build.log \
+            | head -n 14 \
             | while IFS= read -r line; do
                 line="$(printf '%s' "$line" | head -c 800 | tr '\n' ' ')"
                 echo "::error::$line"
