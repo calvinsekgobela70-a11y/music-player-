@@ -25,6 +25,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -322,9 +325,9 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
                 ) {
                     Icon(
                         imageVector = if (isPlaying) {
-                            androidx.compose.material.icons.Icons.Filled.Pause
+                            Icons.Filled.Pause
                         } else {
-                            androidx.compose.material.icons.Icons.Filled.PlayArrow
+                            Icons.Filled.PlayArrow
                         },
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurface,
@@ -338,7 +341,7 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
                     contentDescription = "Next"
                 ) {
                     Icon(
-                        imageVector = androidx.compose.material.icons.Icons.Filled.SkipNext,
+                        imageVector = Icons.Filled.SkipNext,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier
