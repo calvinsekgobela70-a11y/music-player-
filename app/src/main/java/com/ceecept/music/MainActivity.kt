@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                 if (it.moveToFirst()) title = it.getString(0) ?: title
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
         }
         ceeceptApp().playerConnection.playExternal(uri, title)
     }

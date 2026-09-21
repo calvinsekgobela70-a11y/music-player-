@@ -124,7 +124,7 @@ class PlayerConnection(
                     _queueSize.value = controller.mediaItemCount
                     resolveCurrent(controller.currentMediaItem)
                     syncPosition()
-                } catch (_: Exception) {
+                } catch (e: Exception) {
                 }
             },
             MoreExecutors.directExecutor()

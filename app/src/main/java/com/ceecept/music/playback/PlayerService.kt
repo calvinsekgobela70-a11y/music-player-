@@ -60,7 +60,7 @@ class PlayerService : MediaSessionService() {
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                 if (it.moveToFirst()) title = it.getString(0) ?: title
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
         }
         val item = MediaItem.Builder()
             .setMediaId("ext:${uri}")

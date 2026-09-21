@@ -139,16 +139,23 @@ class AudioEngine(
         val eqCsv = _eqGains.value.joinToString(",")
         val d = _dynamicsParams.value
         val s = _spaceParams.value
+        val dynList = mutableListOf<Float>()
+        dynList.add(if (d.enabled) 1f else 0f)
+        dynList.add(d.xoverLowHz)
+        dynList.add(d.xoverHighHz)
+        dynList.addAll(bandToList(d.low))
+        dynList.addAll(bandToList(d.mid))
+        dynList.addAll(bandToList(d.high))
+        dynList.add(if (d.limiterOn) 1f else 0f)
+        dynList.add(d.limiterCeilingDb)
+        dynList.add(d.limiterReleaseMs)
+        dynList.add(d.outputDb)
         context.ceeceptDataStore.edit { p ->
             p[Keys.EQ_GAINS] = eqCsv
             p[Keys.EQ_PREAMP] = _eqPreamp.value
             p[Keys.EQ_ENABLED] = _eqEnabled.value
             p[Keys.EQ_PRESET] = _eqPreset.value
-            p[Keys.DYN] = listOf(
-                if (d.enabled) 1f else 0f, d.xoverLowHz, d.xoverHighHz,
-                bandToList(d.low), bandToList(d.mid), bandToList(d.high),
-                listOf(if (d.limiterOn) 1f else 0f, d.limiterCeilingDb, d.limiterReleaseMs, d.outputDb)
-            ).flatten().joinToString(",")
+            p[Keys.DYN] = dynList.joinToString(",")
             p[Keys.DYN_PRESET] = _dynamicsPreset.value
             p[Keys.SPACE] = listOf(
                 if (s.enabled) 1f else 0f, s.strength, s.azimuth, s.elevation,

@@ -166,7 +166,7 @@ class MusicRepository(
                         }
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 null
             }
         }

@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package com.ceecept.music.ui.components
 
 import android.graphics.Bitmap

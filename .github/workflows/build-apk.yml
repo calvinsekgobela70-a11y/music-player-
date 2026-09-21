@@ -25,7 +25,18 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee build.log; test "${PIPESTATUS[0]}" -eq 0
+
+      - name: Report failure diagnostics
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo '### :x: Build failed — tail of build.log' > fail.md
+          echo '```' >> fail.md
+          tail -n 120 build.log >> fail.md
+          echo '```' >> fail.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@fail.md || true
 
       - name: Rename APK
         run: |
