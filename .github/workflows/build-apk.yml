@@ -1,0 +1,61 @@
+name: Build Ceecept APK
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Assemble debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed 's/.*"\(.*\)"/\1/')
+          cp app/build/outputs/apk/debug/app-debug.apk "Ceecept-v${VERSION}-debug.apk"
+          ls -la *.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ceecept-debug-apk
+          path: Ceecept-*-debug.apk
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Ceecept-debug-apk
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Ceecept-*-debug.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
