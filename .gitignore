@@ -1,0 +1,28 @@
+# Gradle / Android Studio
+*.iml
+.gradle/
+local.properties
+.idea/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# Signing
+*.jks
+*.keystore
+
+# Local APK outputs (CI publishes the official APK)
+*.apk
+*.aab
+!/preview/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (preview tooling only)
+node_modules/
+npm-debug.log*
