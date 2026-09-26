@@ -213,7 +213,10 @@ fun NowPlayingScreen(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Spacer(Modifier.height(20.dp))
+
+            Spacer(Modifier.height(12.dp))
+            ImmerseChip(app = app, onClick = onOpenStudio)
+            Spacer(Modifier.height(14.dp))
 
             var scrubMs by remember { mutableStateOf<Long?>(null) }
             val shownMs = scrubMs ?: positionMs
@@ -367,5 +370,44 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
                     .clip(CircleShape)
             )
         }
+    }
+}
+
+/**
+ * Live state of the spatial renderer: which layout the current output route resolved
+ * to, and whether it is being binauralised. Tap to jump straight to the Studio.
+ */
+@Composable
+private fun ImmerseChip(app: CeeceptApp, onClick: () -> Unit) {
+    val params by app.engine.spaceParams.collectAsStateWithLifecycle()
+    val strategy by app.engine.renderStrategy.collectAsStateWithLifecycle()
+    val active = params.enabled
+    val accent = CeeceptColors.Accent
+    val label = if (!active) {
+        "IMMERSE OFF"
+    } else {
+        val rig = when (strategy.virtualLayout.id) {
+            "7.1.4_immersive" -> "7.1.4"
+            "5.1_surround" -> "5.1"
+            else -> "STEREO"
+        }
+        val fold = if (strategy.binauralize) "HRTF" else "SPEAKERS"
+        "IMMERSE · $rig · $fold"
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(
+                if (active) accent.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 7.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (active) accent else MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
