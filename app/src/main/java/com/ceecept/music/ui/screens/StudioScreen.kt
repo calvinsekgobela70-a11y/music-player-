@@ -54,6 +54,8 @@ import com.ceecept.music.audio.BandParams
 import com.ceecept.music.audio.DynamicsParams
 import com.ceecept.music.audio.EqualizerProcessor
 import com.ceecept.music.audio.SpaceParams
+import com.ceecept.music.audio.spatial.SpatialAudioEngine
+import com.ceecept.music.ui.components.SpatialRadar
 import com.ceecept.music.ui.components.CeeceptTabRow
 import com.ceecept.music.ui.components.GainMeter
 import com.ceecept.music.ui.components.LogStudioSlider
@@ -471,17 +473,15 @@ private fun SpaceTab(app: CeeceptApp) {
             checked = params.enabled,
             onChange = { update(params.copy(enabled = it)) }
         )
-        Text(
-            text = "Rendering onto ${strategy.virtualLayout.label} " +
-                "(${strategy.virtualLayout.totalSpeakers} virtual speakers) · " +
-                if (strategy.binauralize) "binaural HRTF" else "speaker fold-down",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 28.dp, vertical = 4.dp)
+
+        RendererCard(
+            layoutLabel = strategy.virtualLayout.label,
+            speakers = strategy.virtualLayout.totalSpeakers,
+            binaural = strategy.binauralize,
+            objects = SpatialAudioEngine.OBJECTS,
+            heightLayer = strategy.virtualLayout.hasHeightSpeakers
         )
+
         SectionHeader("Presets")
         PresetChips(
             options = SpaceParams.PRESETS.keys.toList(),
@@ -489,21 +489,35 @@ private fun SpaceTab(app: CeeceptApp) {
             onSelect = { engine.applySpacePreset(it) },
             modifier = Modifier.fillMaxWidth()
         )
-        SectionHeader("3D coordinates — drag the sound")
-        SpacePad(
-            azimuth = params.azimuth,
-            elevation = params.elevation,
-            onChange = { az, el -> update(params.copy(azimuth = az, elevation = el)) }
+
+        SectionHeader("The room — drag to move the stage")
+        SpatialRadar(
+            params = params,
+            layout = strategy.virtualLayout,
+            binaural = strategy.binauralize,
+            onChange = { az, distance ->
+                update(params.copy(azimuth = az, distance = distance))
+            }
         )
         Text(
-            text = "Azimuth ${params.azimuth.toInt()}° · Elevation ${params.elevation.toInt()}° — " +
-                "micro-delays (ITD), level shadowing (ILD) and pinna filtering place the stage around your head.",
+            text = "Dots are the objects the renderer is placing: violet = bass (kept " +
+                "centred and mono), red = mids, amber = treble (spread widest). Hollow " +
+                "rings are the height layer.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp)
         )
+
         SectionHeader("Scene")
+        StudioSlider(
+            label = "Elevation",
+            value = params.elevation,
+            valueRange = -40f..90f,
+            display = "${params.elevation.toInt()}°",
+            onChange = { update(params.copy(elevation = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
         StudioSlider(
             label = "Immersion",
             value = params.strength,
@@ -536,6 +550,7 @@ private fun SpaceTab(app: CeeceptApp) {
             onChange = { update(params.copy(height = it)) },
             modifier = Modifier.padding(horizontal = 20.dp)
         )
+
         SectionHeader("Object rendering")
         SwitchRow(
             title = "Per-band placement",
@@ -552,6 +567,7 @@ private fun SpaceTab(app: CeeceptApp) {
             onChange = { update(params.copy(orbitHz = it)) },
             modifier = Modifier.padding(horizontal = 20.dp)
         )
+
         SectionHeader("Space")
         StudioSlider(
             label = "Room size",
@@ -581,80 +597,40 @@ private fun SpaceTab(app: CeeceptApp) {
     }
 }
 
+/** Shows what the renderer resolved the current output route to (guidelines 11.2). */
 @Composable
-private fun SpacePad(
-    azimuth: Float,
-    elevation: Float,
-    onChange: (Float, Float) -> Unit
+private fun RendererCard(
+    layoutLabel: String,
+    speakers: Int,
+    binaural: Boolean,
+    objects: Int,
+    heightLayer: Boolean
 ) {
-    var sizePx by remember { mutableStateOf(IntSize.Zero) }
-    val accent = CeeceptColors.Accent
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val grid = MaterialTheme.colorScheme.outline
-
-    Box(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1.5f)
-            .padding(horizontal = 20.dp)
-            .clip(RoundedCornerShape(22.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .onSizeChanged { sizePx = it }
-            .pointerInput(sizePx) {
-                detectDragGestures { change, _ ->
-                    val w = sizePx.width.toFloat().coerceAtLeast(1f)
-                    val h = sizePx.height.toFloat().coerceAtLeast(1f)
-                    val az = ((change.position.x / w) * 360f - 180f).coerceIn(-180f, 180f)
-                    val el = (90f - (change.position.y / h) * 130f).coerceIn(-40f, 90f)
-                    onChange(az, el)
-                }
-            }
+            .padding(horizontal = 20.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val w = size.width
-            val h = size.height
-            // Crosshair.
-            drawLine(grid, Offset(w / 2, 0f), Offset(w / 2, h), 1.dp.toPx())
-            val elZeroY = h * (90f / 130f)
-            drawLine(grid, Offset(0f, elZeroY), Offset(w, elZeroY), 1.dp.toPx())
-            // Listener head.
-            drawCircle(onSurface.copy(alpha = 0.9f), radius = 26.dp.toPx(), center = Offset(w / 2, elZeroY), style = Stroke(2.dp.toPx()))
-            drawLine(
-                onSurface.copy(alpha = 0.9f),
-                Offset(w / 2, elZeroY - 26.dp.toPx()),
-                Offset(w / 2, elZeroY - 38.dp.toPx()),
-                3.dp.toPx(), StrokeCap.Round
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = layoutLabel,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
             )
-            // Sound source.
-            val sx = (azimuth + 180f) / 360f * w
-            val sy = (90f - elevation) / 130f * h
-            drawLine(
-                accent.copy(alpha = 0.5f),
-                Offset(w / 2, elZeroY), Offset(sx, sy),
-                1.5.dp.toPx(), StrokeCap.Round
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "$objects objects → $speakers virtual speakers → " +
+                    (if (binaural) "binaural HRTF" else "speaker fold-down") +
+                    (if (heightLayer) " · height layer active" else ""),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            drawCircle(accent.copy(alpha = 0.25f), radius = 22.dp.toPx(), center = Offset(sx, sy))
-            drawCircle(accent, radius = 10.dp.toPx(), center = Offset(sx, sy))
-            drawCircle(Color.White, radius = 4.dp.toPx(), center = Offset(sx, sy))
         }
-        Text(
-            text = "FRONT",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 10.dp)
-        )
-        Text(
-            text = "${azimuth.toInt()}° / ${elevation.toInt()}°",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 10.dp)
-        )
     }
 }
+
 
 // ---------------------------------------------------------------------------
 
