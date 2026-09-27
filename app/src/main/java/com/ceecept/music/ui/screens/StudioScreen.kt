@@ -118,6 +118,9 @@ private fun EqualizerTab(app: CeeceptApp) {
     val preamp by engine.eqPreamp.collectAsStateWithLifecycle()
     val enabled by engine.eqEnabled.collectAsStateWithLifecycle()
     val preset by engine.eqPreset.collectAsStateWithLifecycle()
+    val musicalQ by engine.eqMusicalQ.collectAsStateWithLifecycle()
+    val autoGain by engine.eqAutoGain.collectAsStateWithLifecycle()
+    val subsonic by engine.eqSubsonic.collectAsStateWithLifecycle()
 
     Column(
         modifier = Modifier
@@ -130,8 +133,30 @@ private fun EqualizerTab(app: CeeceptApp) {
             checked = enabled,
             onChange = { engine.setEqEnabled(it) }
         )
+        SwitchRow(
+            title = if (musicalQ) "Musical EQ curves" else "Precision EQ curves",
+            subtitle = if (musicalQ) {
+                "Small moves are broad and natural; big moves become more focused"
+            } else {
+                "Constant-Q mode for surgical corrections"
+            },
+            checked = musicalQ,
+            onChange = { engine.setEqMusicalQ(it) }
+        )
+        SwitchRow(
+            title = "Auto headroom",
+            subtitle = "Pulls the preamp down by the EQ boost amount so sliders cannot clip",
+            checked = autoGain,
+            onChange = { engine.setEqAutoGain(it) }
+        )
+        SwitchRow(
+            title = "20 Hz subsonic clean-up",
+            subtitle = "Removes inaudible rumble before boosts waste headroom",
+            checked = subsonic,
+            onChange = { engine.setEqSubsonic(it) }
+        )
         Spacer(Modifier.height(4.dp))
-        EqGraph(gains = gains)
+        EqGraph(gains = gains, musicalQ = musicalQ)
         Text(
             text = "20 Hz — 20 kHz · ±12 dB",
             style = MaterialTheme.typography.bodySmall,
@@ -173,7 +198,7 @@ private fun EqualizerTab(app: CeeceptApp) {
 }
 
 @Composable
-private fun EqGraph(gains: FloatArray) {
+private fun EqGraph(gains: FloatArray, musicalQ: Boolean = true) {
     val accent = MaterialTheme.colorScheme.primary
     val grid = MaterialTheme.colorScheme.outline
     val bg = MaterialTheme.colorScheme.surfaceVariant
@@ -217,7 +242,7 @@ private fun EqGraph(gains: FloatArray) {
         val steps = 90
         for (i in 0..steps) {
             val f = 20f * (20000f / 20f).pow(i.toFloat() / steps)
-            val db = EqualizerProcessor.responseDb(f, gains, 48000).coerceIn(-15f, 15f)
+            val db = EqualizerProcessor.responseDb(f, gains, 48000, musicalQ).coerceIn(-15f, 15f)
             val x = xFor(f)
             val y = yFor(db)
             if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)

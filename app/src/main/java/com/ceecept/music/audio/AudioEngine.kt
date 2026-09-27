@@ -49,6 +49,15 @@ class AudioEngine(
     private val _eqPreset = MutableStateFlow("Flat")
     val eqPreset: StateFlow<String> = _eqPreset.asStateFlow()
 
+    private val _eqMusicalQ = MutableStateFlow(true)
+    val eqMusicalQ: StateFlow<Boolean> = _eqMusicalQ.asStateFlow()
+
+    private val _eqAutoGain = MutableStateFlow(true)
+    val eqAutoGain: StateFlow<Boolean> = _eqAutoGain.asStateFlow()
+
+    private val _eqSubsonic = MutableStateFlow(true)
+    val eqSubsonic: StateFlow<Boolean> = _eqSubsonic.asStateFlow()
+
     // ---- Dynamics state ----
     private val _dynamicsParams = MutableStateFlow(DynamicsParams.DEFAULT)
     val dynamicsParams: StateFlow<DynamicsParams> = _dynamicsParams.asStateFlow()
@@ -134,6 +143,26 @@ class AudioEngine(
         scheduleSave()
     }
 
+    fun setEqMusicalQ(on: Boolean) {
+        _eqMusicalQ.value = on
+        eq.musicalQ = on
+        scheduleSave()
+    }
+
+    fun setEqAutoGain(on: Boolean) {
+        _eqAutoGain.value = on
+        eq.autoGain = on
+        // Force a coefficient rebuild so autoGainDb updates immediately.
+        eq.setAll(_eqGains.value, _eqPreamp.value)
+        scheduleSave()
+    }
+
+    fun setEqSubsonic(on: Boolean) {
+        _eqSubsonic.value = on
+        eq.subsonicFilter = on
+        scheduleSave()
+    }
+
     fun applyEqPreset(name: String) {
         val preset = EqualizerProcessor.PRESETS[name] ?: return
         _eqGains.value = preset.copyOf()
@@ -202,6 +231,9 @@ class AudioEngine(
             p[Keys.EQ_PREAMP] = _eqPreamp.value
             p[Keys.EQ_ENABLED] = _eqEnabled.value
             p[Keys.EQ_PRESET] = _eqPreset.value
+            p[Keys.EQ_MUSICAL_Q] = _eqMusicalQ.value
+            p[Keys.EQ_AUTO_GAIN] = _eqAutoGain.value
+            p[Keys.EQ_SUBSONIC] = _eqSubsonic.value
             p[Keys.DYN] = dynList.joinToString(",")
             p[Keys.DYN_PRESET] = _dynamicsPreset.value
             p[Keys.SPACE] = listOf(
@@ -216,7 +248,9 @@ class AudioEngine(
     }
 
     private fun bandToList(b: BandParams): List<Float> = listOf(
-        if (b.gateOn) 1f else 0f, b.gateDb, b.thresholdDb, b.ratio, b.attackMs, b.releaseMs, b.makeupDb
+        if (b.gateOn) 1f else 0f, b.gateDb, b.thresholdDb, b.ratio, b.attackMs, b.releaseMs,
+        b.makeupDb, b.kneeDb, b.rmsBlend, if (b.autoMakeup) 1f else 0f,
+        if (b.programRelease) 1f else 0f
     )
 
     private suspend fun restore() {
@@ -230,21 +264,39 @@ class AudioEngine(
         _eqPreamp.value = p[Keys.EQ_PREAMP] ?: 0f
         _eqEnabled.value = p[Keys.EQ_ENABLED] ?: true
         _eqPreset.value = p[Keys.EQ_PRESET] ?: "Flat"
+        _eqMusicalQ.value = p[Keys.EQ_MUSICAL_Q] ?: true
+        _eqAutoGain.value = p[Keys.EQ_AUTO_GAIN] ?: true
+        _eqSubsonic.value = p[Keys.EQ_SUBSONIC] ?: true
+        eq.musicalQ = _eqMusicalQ.value
+        eq.autoGain = _eqAutoGain.value
+        eq.subsonicFilter = _eqSubsonic.value
         eq.setAll(_eqGains.value, _eqPreamp.value)
         eq.enabled = _eqEnabled.value
         // Dynamics
         p[Keys.DYN]?.split(",")?.mapNotNull { it.toFloatOrNull() }?.let { list ->
-            if (list.size == 3 + 7 * 3 + 4) {
+            val oldBand = 7
+            val newBand = 11
+            val bandSize = when {
+                list.size == 3 + oldBand * 3 + 4 -> oldBand
+                list.size == 3 + newBand * 3 + 4 -> newBand
+                else -> 0
+            }
+            if (bandSize > 0) {
                 fun bandAt(o: Int) = BandParams(
                     gateOn = list[o] > 0.5f, gateDb = list[o + 1], thresholdDb = list[o + 2],
                     ratio = list[o + 3], attackMs = list[o + 4], releaseMs = list[o + 5],
-                    makeupDb = list[o + 6]
+                    makeupDb = list[o + 6],
+                    kneeDb = if (bandSize > 7) list[o + 7] else 8f,
+                    rmsBlend = if (bandSize > 8) list[o + 8] else 0.5f,
+                    autoMakeup = if (bandSize > 9) list[o + 9] > 0.5f else true,
+                    programRelease = if (bandSize > 10) list[o + 10] > 0.5f else true
                 )
+                val tail = 3 + bandSize * 3
                 val d = DynamicsParams(
                     enabled = list[0] > 0.5f, xoverLowHz = list[1], xoverHighHz = list[2],
-                    low = bandAt(3), mid = bandAt(10), high = bandAt(17),
-                    limiterOn = list[24] > 0.5f, limiterCeilingDb = list[25],
-                    limiterReleaseMs = list[26], outputDb = list[27]
+                    low = bandAt(3), mid = bandAt(3 + bandSize), high = bandAt(3 + bandSize * 2),
+                    limiterOn = list[tail] > 0.5f, limiterCeilingDb = list[tail + 1],
+                    limiterReleaseMs = list[tail + 2], outputDb = list[tail + 3]
                 )
                 _dynamicsParams.value = d
             }
@@ -284,6 +336,9 @@ class AudioEngine(
         val EQ_PREAMP = floatPreferencesKey("eq_preamp")
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")
         val EQ_PRESET = stringPreferencesKey("eq_preset")
+        val EQ_MUSICAL_Q = booleanPreferencesKey("eq_musical_q")
+        val EQ_AUTO_GAIN = booleanPreferencesKey("eq_auto_gain")
+        val EQ_SUBSONIC = booleanPreferencesKey("eq_subsonic")
         val DYN = stringPreferencesKey("dyn")
         val DYN_PRESET = stringPreferencesKey("dyn_preset")
         val SPACE = stringPreferencesKey("space")
