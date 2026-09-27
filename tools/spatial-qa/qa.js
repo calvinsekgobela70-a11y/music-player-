@@ -594,7 +594,7 @@ for (const [id, speakers] of Object.entries(LAYOUTS)) {
 //   * the limiter no longer distorts the bass it is holding down,
 //   * the loudness match returns the render to the level of the source.
 
-const N_FFT = 1024, HOP = 256, HALF = N_FFT / 2, MED_T = 17, MED_F = 11, EPSQ = 1e-12;
+const N_FFT = 1024, HOP = 256, HALF = N_FFT / 2, MED_T = 15, MED_F = 9, EPSQ = 1e-12;
 
 function makeFft(n) {
   const levels = Math.log2(n);

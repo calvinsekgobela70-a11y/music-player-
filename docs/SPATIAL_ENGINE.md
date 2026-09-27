@@ -1,4 +1,4 @@
-# Ceecept Immerse 3.0 — implementation notes
+# Ceecept Immerse 3.1 — implementation notes
 
 This is the map between the spatial-audio guidelines (`document_pages_1-75.txt`) and the
 code that implements them, plus every place where the implementation deliberately
@@ -6,13 +6,13 @@ departs from the document and why.
 
 Everything lives in `app/src/main/java/com/ceecept/music/audio/spatial/`.
 
-## What version 3.0 adds
+## What version 3.1 adds
 
 Immerse 2.0 rendered the *mix* as objects: a centre object plus a left/right pair per
 frequency band. That is spatialisation, but every instrument still shares the same
 position, because the only thing separating them was frequency.
 
-3.0 separates the **music** first. A short-time Fourier analysis classifies every
+3.0 separated the **music** first; 3.1 makes it more natural, faster and easier to localise. A short-time Fourier analysis classifies every
 time-frequency bin by where it was panned, how coherent the two channels are, and
 whether it is tonal or percussive, then assigns it to one of fourteen streams — bass,
 lead vocal, other centre content, centred percussion, left/right percussion,
@@ -36,13 +36,13 @@ push the output into the limiter. The QA harness asserts this numerically every 
 
 | # | Stream | Azimuth | Elev. | Dist. | Enhancement |
 |---|---|---|---|---|---|
-| 0 | Bass | centre | −3° | 0.95× | missing-fundamental harmonics, LFE feed |
+| 0 | Bass | centre | −3° | 0.95× | sub shelf, 300 Hz box-cut, missing-fundamental harmonics, LFE feed |
 | 1 | Lead vocal | centre | +2° | 0.85× | presence bell, air shelf, de-esser |
 | 2 | Other centre | centre | 0° | 1.00× | — |
 | 3 | Centre percussion | centre | 0° | 1.05× | transient shaper |
 | 4/5 | Percussion L/R | measured, 25–70° | 0° | 1.05× | transient shaper |
 | 6/7 | Instruments L/R | measured, 20–75° | +4° | 1.10× | — |
-| 8/9 | Pads L/R | measured, 85–120° | +18° | 1.25× | all-pass decorrelation |
+| 8/9 | Pads L/R | measured, 85–125° | +18° | 1.25× | louder pad layer, high-band all-pass decorrelation |
 | 10/11 | Room L/R | ±135° | +22° | 1.70× | decorrelation, level follows *Room and air* |
 | 12/13 | Air L/R | ±45° | +55° | 1.45× | decorrelation, high shelf |
 
@@ -120,7 +120,7 @@ decoder ─▶ EqualizerProcessor ─▶ DynamicsProcessor ─▶ SpatializerPro
 | §12.1 Per-band spatial params | `SpatialBands.TABLE` — the guideline's six bands, verbatim |
 | §14 QA metrics | `tools/spatial-qa/qa.js` |
 | — Object separation | `Fft.kt`, `StemSeparator.kt` (new in 3.0) |
-| — Per-stream enhancement | `StreamEnhancers.kt` (new in 3.0) |
+| — Per-stream enhancement | `StreamEnhancers.kt` (bass rebuild, exciter, warmth, decorrelation) |
 | — Gain staging | `LookaheadLimiter`, `LoudnessMatch` in `Artifacts.kt` (new in 3.0) |
 
 ## Deviations, and the reason for each
@@ -231,11 +231,12 @@ Per stereo sample at 48 kHz, 7.1.4 + binaural (the heaviest path):
 | Oversampled saturator | ~56 MACs (both channels) |
 
 Plus, per 256-sample hop when the analyser is running: one 1024-point complex FFT for
-the stereo pair, seven inverse FFTs (two mono streams packed into each), a 17-frame
-median along time and an 11-bin median along frequency for every one of 513 bins.
-That is roughly 80–120 Mflop/s — a few percent of one core on a modern phone, but the
-renderer measures its own block time and falls back to the band model if a device
-cannot keep up, rather than dropping buffers.
+the stereo pair, up to seven inverse FFTs (two mono streams packed into each), a
+15-frame median along time and a 9-bin median along frequency for every one of 513 bins.
+3.1 removes the previous CPU feature-limit fallback, as requested. Instead it reduces
+work directly: circular overlap-add buffers avoid per-hop copying, silent stream pairs
+skip their inverse FFT, dry reverb frames skip the FDN, and the gain smoother only
+updates the speaker slots the active layout can actually use.
 
-Latency: 1024 samples of analysis (21.3 ms at 48 kHz) plus 1.5 ms of limiter
+Latency: 1023 samples of analysis (21.3 ms at 48 kHz) plus 1.5 ms of limiter
 look-ahead, inside the guideline's 50 ms budget.
