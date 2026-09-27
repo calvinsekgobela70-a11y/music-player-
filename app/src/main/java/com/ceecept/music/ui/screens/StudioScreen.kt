@@ -464,7 +464,37 @@ private fun BandCard(name: String, band: BandParams, onChange: (BandParams) -> U
                 onChange = { onChange(band.copy(releaseMs = it)) }
             )
             StudioSlider(
-                label = "Makeup",
+                label = "Soft knee",
+                value = band.kneeDb,
+                valueRange = 0.5f..18f,
+                display = String.format(Locale.US, "%.1f dB", band.kneeDb),
+                onChange = { onChange(band.copy(kneeDb = it)) }
+            )
+            StudioSlider(
+                label = "Detector",
+                value = band.rmsBlend,
+                valueRange = 0f..1f,
+                display = if (band.rmsBlend < 0.05f) "Peak"
+                else if (band.rmsBlend > 0.95f) "RMS"
+                else String.format(Locale.US, "%.0f%% RMS", band.rmsBlend * 100f),
+                onChange = { onChange(band.copy(rmsBlend = it)) }
+            )
+            SwitchRow(
+                title = "Auto make-up",
+                subtitle = "Restores loudness without manual gain chasing",
+                checked = band.autoMakeup,
+                onChange = { onChange(band.copy(autoMakeup = it)) },
+                packed = true
+            )
+            SwitchRow(
+                title = "Program release",
+                subtitle = "Slows release on dense music to avoid pumping",
+                checked = band.programRelease,
+                onChange = { onChange(band.copy(programRelease = it)) },
+                packed = true
+            )
+            StudioSlider(
+                label = "Manual makeup",
                 value = band.makeupDb,
                 valueRange = 0f..24f,
                 display = String.format(Locale.US, "+%.1f dB", band.makeupDb),
