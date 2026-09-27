@@ -12,7 +12,11 @@ data class Track(
     val uri: Uri,
     val trackNumber: Int,
     val year: Int,
-    val mimeType: String
+    val mimeType: String,
+    /** Absolute path when MediaStore still exposes one — used for folder artwork. */
+    val filePath: String = "",
+    /** MediaStore DATE_ADDED, in seconds. */
+    val dateAddedSec: Long = 0L
 )
 
 data class ArtistEntry(
@@ -30,3 +34,20 @@ data class AlbumEntry(
     val trackCount: Int,
     val sample: Track
 )
+
+/** Ways the library can be ordered. */
+enum class TrackSort(val label: String) {
+    TITLE("Title"),
+    ARTIST("Artist"),
+    ALBUM("Album"),
+    DATE_ADDED("Recently added"),
+    LAST_PLAYED("Recently played"),
+    PLAY_COUNT("Most played"),
+    DURATION("Duration"),
+    YEAR("Year");
+
+    companion object {
+        fun fromName(name: String?): TrackSort =
+            entries.firstOrNull { it.name == name } ?: TITLE
+    }
+}

@@ -12,6 +12,7 @@ import androidx.media3.common.Timeline
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.ceecept.music.data.MusicRepository
+import com.ceecept.music.data.PlaybackHistory
 import com.ceecept.music.data.Track
 import com.google.common.util.concurrent.MoreExecutors
 import kotlinx.coroutines.CoroutineScope
@@ -35,6 +36,7 @@ import kotlinx.coroutines.launch
 class PlayerConnection(
     context: Context,
     private val repository: MusicRepository,
+    private val history: PlaybackHistory,
     appScope: CoroutineScope
 ) {
     private val appContext = context.applicationContext
@@ -88,6 +90,8 @@ class PlayerConnection(
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             resolveCurrent(mediaItem)
             syncPosition()
+            mediaItem?.mediaId?.toLongOrNull()?.let { history.recordPlay(it) }
+            persistState()
         }
 
         override fun onTimelineChanged(timeline: Timeline, reason: Int) {
@@ -100,10 +104,12 @@ class PlayerConnection(
 
         override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
             _shuffleOn.value = shuffleModeEnabled
+            history.shuffle = shuffleModeEnabled
         }
 
         override fun onRepeatModeChanged(repeatMode: Int) {
             _repeatMode.value = repeatMode
+            history.repeatMode = repeatMode
         }
     }
 
@@ -111,10 +117,15 @@ class PlayerConnection(
         connect()
         // Position ticker — MUST run on Main: it touches MediaController.
         appScope.launch(Dispatchers.Main) {
+            var tick = 0
             while (isActive) {
                 delay(250)
                 val c = _controller.value
-                if (c != null && c.isPlaying) syncPosition()
+                if (c != null && c.isPlaying) {
+                    syncPosition()
+                    // Save the resume point about once a second.
+                    if (++tick % 4 == 0) persistState()
+                }
             }
         }
     }
@@ -143,6 +154,44 @@ class PlayerConnection(
         }
     }
 
+    /** Persist what is playing so the app can pick it up again next launch. */
+    private fun persistState() {
+        val c = _controller.value ?: return
+        val id = c.currentMediaItem?.mediaId?.toLongOrNull() ?: return
+        history.saveNowPlaying(id, c.currentPosition.coerceAtLeast(0), c.currentMediaItemIndex)
+    }
+
+    /** Store the queue itself, so "resume" brings back the whole listening session. */
+    private fun persistQueue(tracks: List<Track>, index: Int) {
+        history.queueIds = tracks.map { it.id }
+        history.queueIndex = index
+    }
+
+    /**
+     * Restore the last session: the same queue, the same track, the same position —
+     * paused, so nothing starts playing on its own when the app is opened.
+     */
+    private fun restoreSession(controller: MediaController) {
+        if (!history.resumeOnLaunch) return
+        if (controller.mediaItemCount > 0) return
+        val ids = history.queueIds
+        if (ids.isEmpty()) return
+        val tracks = repository.findAll(ids)
+        if (tracks.isEmpty()) return
+        val index = history.queueIndex.coerceIn(0, tracks.lastIndex)
+        controller.setMediaItems(tracks.map { it.toMediaItem() })
+        controller.seekTo(index, history.lastPositionMs.coerceAtLeast(0))
+        controller.shuffleModeEnabled = history.shuffle
+        controller.repeatMode = history.repeatMode
+        controller.prepare()
+        restored = true
+    }
+
+    /** True once a previous session has been put back in place. */
+    @Volatile
+    var restored = false
+        private set
+
     /** Runs on the main thread. */
     private fun onControllerReady(controller: MediaController) {
         controller.addListener(listener)
@@ -154,6 +203,13 @@ class PlayerConnection(
         _queueSize.value = controller.mediaItemCount
         resolveCurrent(controller.currentMediaItem)
         syncPosition()
+        // The library may not have finished scanning yet; retry shortly if so.
+        runCatching { restoreSession(controller) }
+        if (!restored) {
+            mainHandler.postDelayed({
+                _controller.value?.let { c -> runCatching { restoreSession(c) } }
+            }, 1500)
+        }
     }
 
     private fun resolveCurrent(item: MediaItem?) {
@@ -192,11 +248,37 @@ class PlayerConnection(
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
         if (tracks.isEmpty()) return
+        val index = startIndex.coerceIn(0, tracks.lastIndex)
+        persistQueue(tracks, index)
+        history.recordPlay(tracks[index].id)
         onMain { c ->
             c.setMediaItems(tracks.map { it.toMediaItem() })
-            c.seekToDefaultPosition(startIndex.coerceIn(0, tracks.lastIndex))
+            c.seekToDefaultPosition(index)
             c.prepare()
             c.play()
+        }
+    }
+
+    /** Resume the restored session (used by the "continue listening" button). */
+    fun resumePlayback() {
+        onMain { c ->
+            if (c.mediaItemCount > 0) {
+                c.prepare()
+                c.play()
+            }
+        }
+    }
+
+    /** Resume the saved session even if the controller connected before the library scan finished. */
+    fun resumeLastKnown() {
+        onMain { c ->
+            if (c.mediaItemCount == 0) restoreSession(c)
+            if (c.mediaItemCount > 0) {
+                val index = history.queueIndex.coerceIn(0, c.mediaItemCount - 1)
+                c.seekTo(index, history.lastPositionMs.coerceAtLeast(0))
+                c.prepare()
+                c.play()
+            }
         }
     }
 

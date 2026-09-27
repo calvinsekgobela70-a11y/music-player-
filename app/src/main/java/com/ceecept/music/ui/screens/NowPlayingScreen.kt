@@ -1,6 +1,6 @@
 package com.ceecept.music.ui.screens
 
-import android.os.Build
+import android.graphics.Bitmap
 import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,10 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +50,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ceecept.music.CeeceptApp
+import com.ceecept.music.ui.components.ArtworkBackdrop
+import com.ceecept.music.ui.components.ArtworkPalette
 import com.ceecept.music.ui.components.ArtworkView
 import com.ceecept.music.ui.components.BouncyIconButton
 import com.ceecept.music.ui.components.CeeceptSlider
@@ -62,6 +62,8 @@ import com.ceecept.music.ui.components.SkipButton
 import com.ceecept.music.ui.components.formatDuration
 import com.ceecept.music.ui.theme.CeeceptColors
 import com.ceecept.music.ui.theme.CeeceptMotion
+import com.ceecept.music.ui.theme.Glass
+import com.ceecept.music.ui.theme.glass
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -83,6 +85,12 @@ fun NowPlayingScreen(
 
     val title = track?.title ?: externalTitle ?: "Nothing playing"
     val subtitle = track?.let { "${it.artist} · ${it.album}" } ?: "Pick a song from your library"
+
+    var backdropBitmap by remember(track?.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(track?.id) {
+        backdropBitmap = track?.let { app.repository.artwork(it, 384) }
+    }
+    val palette = remember(backdropBitmap) { ArtworkPalette.from(backdropBitmap) }
 
     val scope = rememberCoroutineScope()
     val dragOffset = remember { Animatable(0f) }
@@ -109,33 +117,13 @@ fun NowPlayingScreen(
                     }
                 }
             )
-            .background(MaterialTheme.colorScheme.background)
+            .background(palette.dominant)
     ) {
-        // Blurred artwork backdrop.
-        var backdropModifier = Modifier
-            .fillMaxSize()
-            .alpha(0.55f)
-        if (Build.VERSION.SDK_INT >= 31) {
-            backdropModifier = backdropModifier.blur(90.dp)
-        }
-        ArtworkView(
-            track = track,
-            repository = app.repository,
-            modifier = backdropModifier,
-            cornerRadius = 0.dp,
-            thumbSize = 256
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
-                            MaterialTheme.colorScheme.background.copy(alpha = 0.88f)
-                        )
-                    )
-                )
+        ArtworkBackdrop(
+            palette = palette,
+            animated = isPlaying,
+            intensity = 1f,
+            modifier = Modifier.fillMaxSize()
         )
 
         Column(
@@ -155,7 +143,7 @@ fun NowPlayingScreen(
                     Icon(
                         Icons.Filled.KeyboardArrowDown,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface,
+                        tint = Color.White.copy(alpha = 0.92f),
                         modifier = Modifier
                             .padding(6.dp)
                             .size(28.dp)
@@ -164,7 +152,7 @@ fun NowPlayingScreen(
                 Text(
                     text = "NOW PLAYING",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = Color.White.copy(alpha = 0.72f),
                     modifier = Modifier.align(Alignment.Center)
                 )
                 BouncyIconButton(
@@ -192,7 +180,7 @@ fun NowPlayingScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                cornerRadius = 24.dp,
+                cornerRadius = 30.dp,
                 thumbSize = 1024
             )
             Spacer(Modifier.height(28.dp))
@@ -208,7 +196,7 @@ fun NowPlayingScreen(
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Color.White.copy(alpha = 0.76f),
                 textAlign = TextAlign.Center,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -238,12 +226,12 @@ fun NowPlayingScreen(
                 Text(
                     text = formatDuration(shownMs),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = Color.White.copy(alpha = 0.70f)
                 )
                 Text(
                     text = formatDuration(durationMs),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = Color.White.copy(alpha = 0.70f)
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -283,12 +271,11 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
 
     if (track == null && externalTitle == null) return
 
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(16.dp),
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 6.dp)
+            .glass(RoundedCornerShape(22.dp), strength = 1.2f)
             .clickable { onExpand() }
     ) {
         Column {
@@ -335,7 +322,7 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
                             Icons.Filled.PlayArrow
                         },
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface,
+                        tint = Color.White.copy(alpha = 0.92f),
                         modifier = Modifier
                             .padding(8.dp)
                             .size(26.dp)
@@ -348,7 +335,7 @@ fun MiniPlayer(app: CeeceptApp, onExpand: () -> Unit) {
                     Icon(
                         imageVector = Icons.Filled.SkipNext,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurface,
+                        tint = Color.White.copy(alpha = 0.92f),
                         modifier = Modifier
                             .padding(8.dp)
                             .size(26.dp)
@@ -396,11 +383,8 @@ private fun ImmerseChip(app: CeeceptApp, onClick: () -> Unit) {
     }
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(
-                if (active) accent.copy(alpha = 0.16f)
-                else MaterialTheme.colorScheme.surfaceVariant
-            )
+            .glass(RoundedCornerShape(50), strength = 0.7f)
+            .background(if (active) accent.copy(alpha = 0.18f) else Color.Transparent)
             .clickable { onClick() }
             .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {

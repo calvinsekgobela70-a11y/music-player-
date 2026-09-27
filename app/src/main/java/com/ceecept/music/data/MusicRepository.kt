@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Offline-first music library backed by MediaStore. No network involved.
@@ -31,12 +32,25 @@ class MusicRepository(
 
     private val byId = mutableMapOf<Long, Track>()
 
-    private val artCache = LruCache<Long, Bitmap>(64)
+    private val artCache = LruCache<Long, Bitmap>(96)
 
-    /** Albums already probed that have no extractable art — avoids re-decoding per row. */
-    private val noArt = mutableSetOf<Long>()
+    /** Album art paths from the MediaStore albums table, resolved once per scan. */
+    private val albumArtPaths = mutableMapOf<Long, String>()
+
+    /**
+     * Albums probed without success, with the time of the attempt. Unlike a permanent
+     * "no art" set this expires: on some devices (notably EMUI) the very first probe
+     * can fail while the media provider is still warming up, and a permanent negative
+     * cache would then show blank artwork until the app is restarted.
+     */
+    private val artMisses = mutableMapOf<Long, Long>()
+    private val missRetryMs = 20_000L
 
     fun findById(id: Long): Track? = synchronized(byId) { byId[id] }
+
+    fun findAll(ids: List<Long>): List<Track> = synchronized(byId) {
+        ids.mapNotNull { byId[it] }
+    }
 
     fun artists(): List<ArtistEntry> {
         return _tracks.value.groupBy { it.artist }.map { (name, list) ->
@@ -72,6 +86,30 @@ class MusicRepository(
         _tracks.value.filter { it.albumId == albumId }
             .sortedWith(compareBy({ it.trackNumber }, { it.title }))
 
+    /** Apply one of the library sort orders. History is needed for the play-based ones. */
+    fun sorted(
+        list: List<Track>,
+        sort: TrackSort,
+        ascending: Boolean,
+        history: PlaybackHistory?
+    ): List<Track> {
+        val base = when (sort) {
+            TrackSort.TITLE -> list.sortedBy { it.title.lowercase() }
+            TrackSort.ARTIST -> list.sortedWith(
+                compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.trackNumber })
+            )
+            TrackSort.ALBUM -> list.sortedWith(
+                compareBy({ it.album.lowercase() }, { it.trackNumber }, { it.title.lowercase() })
+            )
+            TrackSort.DATE_ADDED -> list.sortedByDescending { it.dateAddedSec }
+            TrackSort.DURATION -> list.sortedBy { it.durationMs }
+            TrackSort.YEAR -> list.sortedByDescending { it.year }
+            TrackSort.LAST_PLAYED -> list.sortedByDescending { history?.lastPlayedAt(it.id) ?: 0L }
+            TrackSort.PLAY_COUNT -> list.sortedByDescending { history?.playCount(it.id) ?: 0 }
+        }
+        return if (ascending) base else base.reversed()
+    }
+
     fun refresh() {
         appScope.launch { load() }
     }
@@ -80,11 +118,13 @@ class MusicRepository(
         withContext(Dispatchers.IO) {
             _isLoading.value = true
             try {
+                loadAlbumArtPaths()
                 val list = queryTracks()
                 synchronized(byId) {
                     byId.clear()
                     list.forEach { byId[it.id] = it }
                 }
+                synchronized(artMisses) { artMisses.clear() }
                 _tracks.value = list
             } finally {
                 _isLoading.value = false
@@ -104,7 +144,9 @@ class MusicRepository(
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.TRACK,
             MediaStore.Audio.Media.YEAR,
-            MediaStore.Audio.Media.MIME_TYPE
+            MediaStore.Audio.Media.MIME_TYPE,
+            MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.DATE_ADDED
         )
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
         val sortOrder = "${MediaStore.Audio.Media.TITLE} ASC"
@@ -118,6 +160,8 @@ class MusicRepository(
             val trackCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TRACK)
             val yearCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.YEAR)
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
+            val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
+            val addedCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val duration = cursor.getLong(durationCol)
@@ -135,7 +179,9 @@ class MusicRepository(
                         uri = ContentUris.withAppendedId(uri, id),
                         trackNumber = cursor.getInt(trackCol),
                         year = cursor.getInt(yearCol),
-                        mimeType = cursor.getString(mimeCol) ?: ""
+                        mimeType = cursor.getString(mimeCol) ?: "",
+                        filePath = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else "",
+                        dateAddedSec = if (addedCol >= 0) cursor.getLong(addedCol) else 0L
                     )
                 )
             }
@@ -143,33 +189,119 @@ class MusicRepository(
         return result
     }
 
+    /**
+     * The albums table still carries a plain file path to the cached cover on most
+     * devices, including EMUI, and reading it is far cheaper and far more reliable
+     * than asking the media provider for a thumbnail.
+     */
+    private fun loadAlbumArtPaths() {
+        albumArtPaths.clear()
+        try {
+            @Suppress("DEPRECATION")
+            val projection = arrayOf(
+                MediaStore.Audio.Albums._ID,
+                MediaStore.Audio.Albums.ALBUM_ART
+            )
+            context.contentResolver.query(
+                MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI, projection, null, null, null
+            )?.use { c ->
+                val idCol = c.getColumnIndexOrThrow(MediaStore.Audio.Albums._ID)
+                val artCol = c.getColumnIndex("album_art")
+                if (artCol < 0) return
+                while (c.moveToNext()) {
+                    val path = c.getString(artCol)
+                    if (!path.isNullOrBlank()) albumArtPaths[c.getLong(idCol)] = path
+                }
+            }
+        } catch (e: Exception) {
+            // Android 11+ removed the column on some builds; the other sources cover it.
+        }
+    }
+
     private fun String.normalizeArtist(): String =
         if (equals("<unknown>", ignoreCase = true)) "Unknown Artist" else this
 
     /**
-     * Album artwork, memory-cached. Probes every offline source in order of
-     * reliability: the file's own tags, then the MediaProvider thumbnail, then
-     * the legacy album-art URI (still served on many devices, all API levels).
-     * Null only when the album genuinely carries no picture.
+     * Album artwork, memory-cached.
+     *
+     * Probes every offline source there is, cheapest and most reliable first, because
+     * no single one works on every device: the MediaStore album-art file, the legacy
+     * album-art provider, the file's own tags (read through a file descriptor, which
+     * some OEM builds need), the tags through a content URI, a cover image sitting next
+     * to the track, and finally the provider thumbnail API.
+     *
+     * Null only when the album genuinely carries no picture anywhere.
      */
     suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? {
-        artCache.get(track.albumId)?.let { return it }
-        synchronized(noArt) { if (noArt.contains(track.albumId)) return null }
+        val key = if (track.albumId > 0) track.albumId else -track.id
+        artCache.get(key)?.let { return it }
+        synchronized(artMisses) {
+            val missedAt = artMisses[key]
+            if (missedAt != null && System.currentTimeMillis() - missedAt < missRetryMs) return null
+        }
         return withContext(Dispatchers.IO) {
-            val bmp = embeddedPicture(track, sizePx)
-                ?: providerThumbnail(track, sizePx)
+            val bmp = albumArtFile(track, sizePx)
                 ?: legacyAlbumArt(track)
+                ?: embeddedViaDescriptor(track, sizePx)
+                ?: embeddedViaUri(track, sizePx)
+                ?: folderArt(track, sizePx)
+                ?: providerThumbnail(track, sizePx)
             if (bmp != null) {
-                artCache.put(track.albumId, bmp)
+                artCache.put(key, bmp)
+                synchronized(artMisses) { artMisses.remove(key) }
             } else {
-                synchronized(noArt) { noArt.add(track.albumId) }
+                synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
             }
             bmp
         }
     }
 
+    /** The cover file the media scanner already extracted for this album. */
+    private fun albumArtFile(track: Track, sizePx: Int): Bitmap? = try {
+        val path = albumArtPaths[track.albumId]
+        if (path.isNullOrBlank()) null else decodeFileSampled(path, sizePx)
+    } catch (e: Exception) {
+        null
+    }
+
+    /** content://media/external/audio/albumart — served on most devices, all API levels. */
+    private fun legacyAlbumArt(track: Track): Bitmap? = try {
+        if (track.albumId <= 0) {
+            null
+        } else {
+            @Suppress("DEPRECATION")
+            val artUri = ContentUris.withAppendedId(
+                Uri.parse("content://media/external/audio/albumart"), track.albumId
+            )
+            context.contentResolver.openInputStream(artUri)?.use { stream ->
+                android.graphics.BitmapFactory.decodeStream(stream)
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /**
+     * Tags read through a file descriptor. `setDataSource(context, uri)` fails on a
+     * number of OEM builds where the same file opens perfectly through a descriptor,
+     * which is the usual reason artwork "just doesn't show" on one particular phone.
+     */
+    private fun embeddedViaDescriptor(track: Track, sizePx: Int): Bitmap? = try {
+        context.contentResolver.openFileDescriptor(track.uri, "r")?.use { pfd ->
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(pfd.fileDescriptor)
+                retriever.embeddedPicture?.let { decodeSampled(it, sizePx) }
+            } finally {
+                retriever.release()
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
     /** Reads art straight out of the file's tags (ID3 APIC / FLAC picture / MP4 covr). */
-    private fun embeddedPicture(track: Track, sizePx: Int): Bitmap? = try {
+    private fun embeddedViaUri(track: Track, sizePx: Int): Bitmap? = try {
         val retriever = android.media.MediaMetadataRetriever()
         try {
             retriever.setDataSource(context, track.uri)
@@ -181,44 +313,77 @@ class MusicRepository(
         null
     }
 
-    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing for audio. */
-    private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
-        if (Build.VERSION.SDK_INT >= 29) {
-            context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
+    /** cover.jpg / folder.jpg sitting in the same directory as the track. */
+    private fun folderArt(track: Track, sizePx: Int): Bitmap? = try {
+        val parent = track.filePath.takeIf { it.isNotBlank() }?.let { File(it).parentFile }
+        if (parent == null || !parent.canRead()) {
+            null
         } else {
-            legacyAlbumArt(track)
+            val names = listOf(
+                "cover.jpg", "cover.png", "folder.jpg", "folder.png",
+                "album.jpg", "albumart.jpg", "front.jpg", "artwork.jpg", "Cover.jpg", "Folder.jpg"
+            )
+            var found: Bitmap? = null
+            for (n in names) {
+                val f = File(parent, n)
+                if (f.isFile && f.length() > 0) {
+                    found = decodeFileSampled(f.absolutePath, sizePx)
+                    if (found != null) break
+                }
+            }
+            found
         }
     } catch (e: Exception) {
         null
     }
 
-    /** content://media/external/audio/albumart — works on most devices regardless of API level. */
-    private fun legacyAlbumArt(track: Track): Bitmap? = try {
-        @Suppress("DEPRECATION")
-        val artUri = ContentUris.withAppendedId(
-            Uri.parse("content://media/external/audio/albumart"), track.albumId
-        )
-        context.contentResolver.openInputStream(artUri)?.use { stream ->
-            android.graphics.BitmapFactory.decodeStream(stream)
+    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing. */
+    private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29) {
+            context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
+        } else {
+            null
         }
     } catch (e: Exception) {
         null
     }
 
     /** Downsamples embedded art so list rows never hold multi-megapixel bitmaps. */
-    private fun decodeSampled(bytes: ByteArray, sizePx: Int): Bitmap? {
+    private fun decodeSampled(bytes: ByteArray, sizePx: Int): Bitmap? = try {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
         android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        android.graphics.BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size,
+            android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, sizePx)
+            }
+        )
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun decodeFileSampled(path: String, sizePx: Int): Bitmap? = try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0) {
+            null
+        } else {
+            android.graphics.BitmapFactory.decodeFile(
+                path,
+                android.graphics.BitmapFactory.Options().apply {
+                    inSampleSize = sampleSizeFor(bounds.outWidth, bounds.outHeight, sizePx)
+                }
+            )
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun sampleSizeFor(width: Int, height: Int, target: Int): Int {
         var sample = 1
-        while (
-            bounds.outWidth / (sample * 2) >= sizePx &&
-            bounds.outHeight / (sample * 2) >= sizePx
-        ) {
+        while (width / (sample * 2) >= target && height / (sample * 2) >= target) {
             sample *= 2
         }
-        return android.graphics.BitmapFactory.decodeByteArray(
-            bytes, 0, bytes.size,
-            android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
-        )
+        return sample
     }
 }

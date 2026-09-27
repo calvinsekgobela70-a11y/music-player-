@@ -627,6 +627,30 @@ private fun SpaceTab(app: CeeceptApp) {
             onChange = { update(params.copy(ambience = it)) },
             modifier = Modifier.padding(horizontal = 20.dp)
         )
+        StudioSlider(
+            label = "Pads / immersion",
+            value = params.padLevel,
+            valueRange = 0f..1f,
+            display = "${(params.padLevel * 100).toInt()}%",
+            onChange = { update(params.copy(padLevel = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Imaging focus",
+            value = params.imaging,
+            valueRange = 0f..1f,
+            display = "${(params.imaging * 100).toInt()}%",
+            onChange = { update(params.copy(imaging = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Analogue warmth",
+            value = params.warmth,
+            valueRange = 0f..1f,
+            display = "${(params.warmth * 100).toInt()}%",
+            onChange = { update(params.copy(warmth = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
 
         SectionHeader("Speaker rig")
         PresetChips(

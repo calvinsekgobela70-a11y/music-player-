@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -46,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -60,6 +62,7 @@ import com.ceecept.music.ui.screens.SettingsScreen
 import com.ceecept.music.ui.screens.StudioScreen
 import com.ceecept.music.ui.theme.CeeceptMotion
 import com.ceecept.music.ui.theme.CeeceptTheme
+import com.ceecept.music.ui.theme.glass
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -97,8 +100,23 @@ fun CeeceptRoot(app: CeeceptApp, useCustomFont: Boolean = true) {
     }
 
     CeeceptTheme(mode = themeMode, useCustomFont = useCustomFont) {
-        var tab by rememberSaveable { mutableIntStateOf(0) }
+        var tab by rememberSaveable {
+            mutableIntStateOf(
+                when (app.history.lastTab) {
+                    "studio" -> 1
+                    "settings" -> 2
+                    else -> 0
+                }
+            )
+        }
         var showNowPlaying by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(tab) {
+            app.history.lastTab = when (tab) {
+                1 -> "studio"
+                2 -> "settings"
+                else -> "library"
+            }
+        }
 
         BackHandler(enabled = showNowPlaying) {
             showNowPlaying = false
@@ -118,21 +136,25 @@ fun CeeceptRoot(app: CeeceptApp, useCustomFont: Boolean = true) {
             Scaffold(
                 containerColor = MaterialTheme.colorScheme.background,
                 bottomBar = {
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 14.dp, vertical = 8.dp)
+                            .glass(RoundedCornerShape(28.dp), strength = 1.15f)
                     ) {
-                        TABS.forEachIndexed { index, item ->
-                            NavigationBarItem(
-                                selected = tab == index,
-                                onClick = { tab = index },
-                                icon = { Icon(item.icon, contentDescription = item.title) },
-                                label = { Text(item.title) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                        NavigationBar(containerColor = Color.Transparent) {
+                            TABS.forEachIndexed { index, item ->
+                                NavigationBarItem(
+                                    selected = tab == index,
+                                    onClick = { tab = index },
+                                    icon = { Icon(item.icon, contentDescription = item.title) },
+                                    label = { Text(item.title) },
+                                    colors = NavigationBarItemDefaults.colors(
+                                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                                        indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }

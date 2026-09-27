@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -77,12 +78,15 @@ import com.ceecept.music.CeeceptApp
 import com.ceecept.music.data.AlbumEntry
 import com.ceecept.music.data.ArtistEntry
 import com.ceecept.music.data.Track
+import com.ceecept.music.data.TrackSort
 import com.ceecept.music.ui.components.ArtworkView
 import com.ceecept.music.ui.components.BouncyIconButton
 import com.ceecept.music.ui.components.CeeceptTabRow
 import com.ceecept.music.ui.components.formatDuration
 import com.ceecept.music.ui.theme.CeeceptColors
 import com.ceecept.music.ui.theme.CeeceptMotion
+import com.ceecept.music.ui.theme.Glass
+import com.ceecept.music.ui.theme.glass
 
 private sealed interface LibraryRoute {
     data object Root : LibraryRoute
@@ -240,8 +244,24 @@ private fun LibraryRoot(
     val tracks by app.repository.tracks.collectAsStateWithLifecycle()
     val isLoading by app.repository.isLoading.collectAsStateWithLifecycle()
     val currentTrack by app.playerConnection.currentTrack.collectAsStateWithLifecycle()
+    val historyRevision = app.history.revision.value
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var query by rememberSaveable { mutableStateOf("") }
+    var sortName by rememberSaveable { mutableStateOf(app.history.sortOrder) }
+    var sortAscending by rememberSaveable { mutableStateOf(app.history.sortAscending) }
+    val sortOrder = TrackSort.fromName(sortName)
+    LaunchedEffect(sortName, sortAscending) {
+        app.history.sortOrder = sortName
+        app.history.sortAscending = sortAscending
+    }
+    val filteredTracks = remember(tracks, query, sortName, sortAscending, historyRevision) {
+        app.repository.sorted(
+            tracks.filter { it.matches(query) },
+            sortOrder,
+            sortAscending,
+            app.history
+        )
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -272,7 +292,9 @@ private fun LibraryRoot(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
         )
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(10.dp))
+        ContinueListening(app = app)
+        Spacer(Modifier.height(10.dp))
         CeeceptTabRow(
             tabs = listOf("Songs", "Artists", "Albums"),
             selected = tab,
@@ -282,6 +304,15 @@ private fun LibraryRoot(
                 .padding(horizontal = 20.dp)
         )
         Spacer(Modifier.height(8.dp))
+        if (tab == 0) {
+            SortControl(
+                sort = sortOrder,
+                ascending = sortAscending,
+                onSort = { sortName = it.name },
+                onDirection = { sortAscending = !sortAscending }
+            )
+            Spacer(Modifier.height(6.dp))
+        }
 
         when {
             isLoading && tracks.isEmpty() -> {
@@ -303,7 +334,7 @@ private fun LibraryRoot(
                 ) { t ->
                     when (t) {
                         0 -> SongList(
-                            tracks = tracks.filter { it.matches(query) },
+                            tracks = filteredTracks,
                             currentId = currentTrack?.id,
                             app = app
                         )
@@ -322,6 +353,112 @@ private fun LibraryRoot(
                             onAlbum = onAlbum
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun ContinueListening(app: CeeceptApp) {
+    val track = app.repository.findById(app.history.lastTrackId) ?: return
+    val position = app.history.lastPositionMs
+    androidx.compose.animation.AnimatedVisibility(visible = true, enter = fadeIn(), exit = fadeOut()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .glass(RoundedCornerShape(Glass.CornerLarge), strength = 0.9f)
+                .clickable { app.playerConnection.resumeLastKnown() }
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ArtworkView(
+                track = track,
+                repository = app.repository,
+                modifier = Modifier.size(50.dp),
+                cornerRadius = 12.dp,
+                thumbSize = 256
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Continue listening",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = track.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${formatDuration(position)} · ${track.artist}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(Icons.Filled.PlayArrow, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun SortControl(
+    sort: TrackSort,
+    ascending: Boolean,
+    onSort: (TrackSort) -> Unit,
+    onDirection: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "Sort songs",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                shape = CircleShape,
+                modifier = Modifier.clickable { onDirection() }
+            ) {
+                Text(
+                    text = if (ascending) "A → Z" else "Z → A",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 20.dp)
+        ) {
+            itemsIndexed(TrackSort.entries.toList(), key = { _, item -> item.name }) { _, item ->
+                val selected = item == sort
+                Surface(
+                    color = if (selected) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f),
+                    shape = CircleShape,
+                    modifier = Modifier.clickable { onSort(item) }
+                ) {
+                    Text(
+                        text = item.label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
                 }
             }
         }
