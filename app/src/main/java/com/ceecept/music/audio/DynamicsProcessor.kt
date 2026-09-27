@@ -17,7 +17,22 @@ data class BandParams(
     val ratio: Float = 3f,
     val attackMs: Float = 10f,
     val releaseMs: Float = 120f,
-    val makeupDb: Float = 0f
+    val makeupDb: Float = 0f,
+    /** Soft-knee width in dB. Wider = the compressor eases in instead of switching on. */
+    val kneeDb: Float = 8f,
+    /**
+     * Detector character: 0 = peak (catches transients), 1 = RMS (follows loudness the
+     * way the ear does). A blend of the two is what most musical compressors use.
+     */
+    val rmsBlend: Float = 0.5f,
+    /** Derive makeup gain from threshold and ratio instead of using [makeupDb]. */
+    val autoMakeup: Boolean = true,
+    /**
+     * Program-dependent release: after sustained compression the release slows down,
+     * which is the behaviour that stops a compressor pumping on dense material
+     * (the "auto" mode of the classic 1176/LA-2A designs).
+     */
+    val programRelease: Boolean = true
 )
 
 data class DynamicsParams(
@@ -92,6 +107,13 @@ class DynamicsProcessor : BaseAudioProcessor() {
     private val hp2a = Biquad(); private val hp2b = Biquad()
 
     private val bandEnvelopes = Array(3) { Envelope() }
+    private val bandRms = FloatArray(3)
+    private val bandHold = FloatArray(3)
+    private val apLowA = Biquad()
+    private val apLowB = Biquad()
+    private var rmsCoefs = FloatArray(3)
+    private var fastReleaseCoefs = FloatArray(3)
+    private var autoMakeupLin = FloatArray(3) { 1f }
     private val limiterEnvelope = Envelope()
     private var limiterLines: Array<DelayLine> = emptyArray()
     private var limiterGain = 1f
@@ -126,7 +148,7 @@ class DynamicsProcessor : BaseAudioProcessor() {
     }
 
     private fun ensureCapacity() {
-        xStates = Array(channels) { Array(8) { BiquadState() } }
+        xStates = Array(channels) { Array(10) { BiquadState() } }
         val lookahead = (0.005f * sampleRate).toInt().coerceAtLeast(16)
         limiterLines = Array(channels) { DelayLine(lookahead + 8).also { it.delay = lookahead.toFloat() } }
         bandEnvelopes.forEach { it.reset() }
@@ -144,10 +166,24 @@ class DynamicsProcessor : BaseAudioProcessor() {
         lp2b.setLowPass(p.xoverHighHz, q, sampleRate)
         hp2a.setHighPass(p.xoverHighHz, q, sampleRate)
         hp2b.setHighPass(p.xoverHighHz, q, sampleRate)
+        // Three-way crossovers need the low band delayed in phase by the second
+        // crossover's all-pass, or low and mid arrive misaligned and notch each other
+        // around the upper crossover frequency.
+        apLowA.setAllPass(p.xoverHighHz, 0.7071f, sampleRate)
+        apLowB.setAllPass(p.xoverHighHz, 0.7071f, sampleRate)
         for (i in 0..2) {
             val b = p.band(i)
             attackCoefs[i] = Dsp.envelopeCoef(b.attackMs, sampleRate)
             releaseCoefs[i] = Dsp.envelopeCoef(b.releaseMs, sampleRate)
+            fastReleaseCoefs[i] = Dsp.envelopeCoef(b.releaseMs * 0.32f, sampleRate)
+            rmsCoefs[i] = Dsp.envelopeCoef(b.attackMs * 3f + 12f, sampleRate)
+            // Half of the theoretical make-up, measured at a -12 dBFS reference: enough
+            // to restore the loudness the compressor took away without inviting clipping.
+            autoMakeupLin[i] = if (b.autoMakeup) {
+                Dsp.dbToLinear(-compGainDb(-12f, b.thresholdDb, b.ratio, b.kneeDb) * 0.75f)
+            } else {
+                Dsp.dbToLinear(b.makeupDb)
+            }
         }
         appliedParams = p
     }
@@ -199,10 +235,11 @@ class DynamicsProcessor : BaseAudioProcessor() {
             for (c in 0 until channels) {
                 val x = s[f * channels + c]
                 val st = xStates[c]
-                val low = lp1b.process(lp1a.process(x, st[0]), st[1])
+                var low = lp1b.process(lp1a.process(x, st[0]), st[1])
                 val rest = hp1b.process(hp1a.process(x, st[2]), st[3])
                 val mid = lp2b.process(lp2a.process(rest, st[4]), st[5])
                 val high = hp2b.process(hp2a.process(rest, st[6]), st[7])
+                low = apLowB.process(apLowA.process(low, st[8]), st[9])
                 val o = (f * channels + c) * 3
                 bands[o] = low
                 bands[o + 1] = mid
@@ -212,19 +249,39 @@ class DynamicsProcessor : BaseAudioProcessor() {
 
         // 2) Per-band linked dynamics.
         val grDb = FloatArray(3)
-        val makeupLin = FloatArray(3) { Dsp.dbToLinear(p.band(it).makeupDb) }
+        val makeupLin = autoMakeupLin
         for (f in 0 until frames) {
             for (b in 0..2) {
-                // Linked peak across channels.
+                // Linked across channels: a compressor that acts on one channel only
+                // drags the stereo image about.
                 var peak = 0f
+                var power = 0f
                 for (c in 0 until channels) {
-                    val v = kotlin.math.abs(bands[(f * channels + c) * 3 + b])
-                    if (v > peak) peak = v
+                    val v = bands[(f * channels + c) * 3 + b]
+                    val a = kotlin.math.abs(v)
+                    if (a > peak) peak = a
+                    power += v * v
                 }
                 val bp = p.band(b)
-                val env = bandEnvelopes[b].process(peak, attackCoefs[b], releaseCoefs[b])
+                // Hybrid detector: peak for transients, RMS for loudness.
+                bandRms[b] += rmsCoefs[b] * (power / channels - bandRms[b])
+                val rms = kotlin.math.sqrt(bandRms[b].coerceAtLeast(0f))
+                val detector = peak + (rms - peak) * bp.rmsBlend.coerceIn(0f, 1f)
+
+                // Program-dependent release: the longer the band has been held down,
+                // the slower it lets go.
+                val releaseCoef = if (bp.programRelease) {
+                    val h = bandHold[b].coerceIn(0f, 1f)
+                    fastReleaseCoefs[b] + (releaseCoefs[b] * 0.45f - fastReleaseCoefs[b]) * h
+                } else {
+                    releaseCoefs[b]
+                }
+                val env = bandEnvelopes[b].process(detector, attackCoefs[b], releaseCoef)
                 val xDb = Dsp.linearToDb(env)
-                var gr = compGainDb(xDb, bp.thresholdDb, bp.ratio)
+                var gr = compGainDb(xDb, bp.thresholdDb, bp.ratio, bp.kneeDb)
+                // Hold tracker: rises while compressing, falls back when clear.
+                val working = if (gr < -0.5f) 1f else 0f
+                bandHold[b] += (if (working > bandHold[b]) 0.0004f else 0.00008f) * (working - bandHold[b])
                 if (bp.gateOn && xDb < bp.gateDb) {
                     gr += (bp.gateDb - xDb) * -0.5f // 1:2 downward expansion
                     gr = gr.coerceAtLeast(-48f)
@@ -284,15 +341,14 @@ class DynamicsProcessor : BaseAudioProcessor() {
         writeOutput(s, frames, channels)
     }
 
-    private fun compGainDb(xDb: Float, threshold: Float, ratio: Float): Float {
-        if (xDb < threshold) return 0f
+    private fun compGainDb(xDb: Float, threshold: Float, ratio: Float, knee: Float = 8f): Float {
         val r = ratio.coerceAtLeast(1f)
-        val knee = 6f
+        if (xDb < threshold - knee / 2) return 0f
         return if (xDb > threshold + knee / 2) {
             (threshold + (xDb - threshold) / r) - xDb
         } else {
             val d = xDb - threshold + knee / 2
-            ((1f / r - 1f) * d * d / (2f * knee))
+            ((1f / r - 1f) * d * d / (2f * knee.coerceAtLeast(0.1f)))
         }
     }
 

@@ -47,6 +47,16 @@ class SmoothedGainBank(size: Int) {
     val current = FloatArray(size)
     private var coef = 0.01f
 
+    /**
+     * How many slots are actually in use. The bank is allocated for the worst case
+     * (every object on a twelve-speaker rig) but a stereo fold-down only uses a sixth
+     * of that, and smoothing gains that are permanently zero is pure waste on a phone.
+     */
+    var activeSize = size
+        set(value) {
+            field = value.coerceIn(0, target.size)
+        }
+
     fun setTimeConstant(ms: Float, sampleRate: Int) {
         val samples = (ms.coerceAtLeast(0.1f) / 1000f) * sampleRate
         coef = (1.0 - Math.exp(-1.0 / samples)).toFloat().coerceIn(1e-5f, 1f)
@@ -55,8 +65,28 @@ class SmoothedGainBank(size: Int) {
     /** Advance every gain one sample towards its target. */
     fun tick() {
         val c = coef
-        for (i in current.indices) {
+        val n = activeSize
+        for (i in 0 until n) {
             current[i] += c * (target[i] - current[i])
+        }
+    }
+
+    /**
+     * Advance only the slots a given layout uses. The bank is laid out as
+     * `[object][maxSpeakers]`, so on a stereo fold-down ten of every twelve gains are
+     * permanently zero — skipping them cuts this loop, one of the few genuinely
+     * per-sample costs in the renderer, by six times.
+     */
+    fun tick(stride: Int, used: Int) {
+        val c = coef
+        val n = current.size
+        var base = 0
+        while (base < n) {
+            val end = base + used
+            for (i in base until end) {
+                current[i] += c * (target[i] - current[i])
+            }
+            base += stride
         }
     }
 

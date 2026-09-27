@@ -44,7 +44,13 @@ data class SpatialScene(
     /** Level of the rear and height ambience streams, 0..1. */
     val ambience: Float = 0.5f,
     /** 0 = follow the output route, 1 = stereo, 2 = 5.1, 3 = 7.1.4. */
-    val rigMode: Int = 0
+    val rigMode: Int = 0,
+    /** How far apart the measured positions are pushed, 0..1. */
+    val imaging: Float = 0.5f,
+    /** Second-harmonic analogue colour on the finished mix, 0..1. */
+    val warmth: Float = 0.35f,
+    /** Level of the wide pad/synth layer, 0..1. */
+    val padLevel: Float = 0.6f
 )
 
 /**
@@ -169,13 +175,17 @@ class SpatialAudioEngine {
     private val separator = StemSeparator()
     private val streamBuf = FloatArray(StemSeparator.STREAMS)
     private val streamTrim = FloatArray(StemSeparator.STREAMS) { 1f }
-    private val virtualBass = VirtualBass()
+    private val bassEngine = BassEngine()
     private val vocalEnhancer = VocalEnhancer()
     private val shaperCentre = TransientShaper()
     private val shaperLeft = TransientShaper()
     private val shaperRight = TransientShaper()
     private val decorrelators = Array(6) { Decorrelator(it) }
     private val airLift = AirLift()
+    private val instExciter = HarmonicExciter(4200f)
+    private val instExciterR = HarmonicExciter(4200f)
+    private val warmthL = TubeWarmth()
+    private val warmthR = TubeWarmth()
     private var dryDelayL = DelayLine(64)
     private var dryDelayR = DelayLine(64)
     private var stemMode = false
@@ -213,15 +223,9 @@ class SpatialAudioEngine {
     @Volatile var renderedFrames: Long = 0L
         private set
 
-    /**
-     * True when the renderer had to switch the analyser off to keep up (§11.2 asks for
-     * graceful degradation rather than dropouts). Cleared whenever the scene changes.
-     */
+    /** Kept for the Studio read-out; the renderer never disables itself. */
     @Volatile var analyserDegraded: Boolean = false
         private set
-
-    private var cpuAverage = 0f
-    private var overloadedBlocks = 0
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -249,11 +253,13 @@ class SpatialAudioEngine {
 
         // --- Immerse 3.0 stages ---
         separator.prepare(sr)
-        virtualBass.prepare(sr)
+        bassEngine.prepare(sr)
         vocalEnhancer.prepare(sr)
         shaperCentre.prepare(sr); shaperLeft.prepare(sr); shaperRight.prepare(sr)
         for (d in decorrelators) d.prepare(sr)
         airLift.prepare(sr)
+        instExciter.prepare(sr); instExciterR.prepare(sr)
+        warmthL.prepare(sr); warmthR.prepare(sr)
         // The dry path is delayed to match the analysis window so dry and wet stay
         // phase-aligned; otherwise the mix comb-filters.
         val analysisLatency = separator.latencySamples()
@@ -331,11 +337,13 @@ class SpatialAudioEngine {
         lookahead.reset()
         loudness.reset()
         separator.reset()
-        virtualBass.reset()
+        bassEngine.reset()
         vocalEnhancer.reset()
         shaperCentre.reset(); shaperLeft.reset(); shaperRight.reset()
         for (d in decorrelators) d.reset()
         airLift.reset()
+        instExciter.reset(); instExciterR.reset()
+        warmthL.reset(); warmthR.reset()
         dryDelayL.clear(); dryDelayR.clear()
         streamLevels.fill(0f)
         busses.fill(0f)
@@ -349,13 +357,18 @@ class SpatialAudioEngine {
         val sr = sampleRate
         val s = scene
         if (lfeIndex == -1) lfeIndex = layout.speakers.indexOfFirst { it.isLfe }
+        // Only the slots this layout can actually use get smoothed per sample.
 
         // --- Immerse 3.0 stem model -------------------------------------------
         stemMode = s.stems
         analyserDegraded = false
-        overloadedBlocks = 0
-        cpuAverage = 0f
-        virtualBass.amount = s.bass.coerceIn(0f, 1f)
+        bassEngine.amount = s.bass.coerceIn(0f, 1f)
+        separator.imaging = s.imaging.coerceIn(0f, 1f)
+        instExciter.amount = (0.15f + 0.35f * s.imaging).coerceIn(0f, 1f)
+        instExciterR.amount = instExciter.amount
+        val warm = s.warmth.coerceIn(0f, 1f)
+        warmthL.amount = warm
+        warmthR.amount = warm
         vocalEnhancer.amount = s.vocal.coerceIn(0f, 1f)
         val punch = s.punch.coerceIn(0f, 1f)
         shaperCentre.amount = punch
@@ -364,8 +377,11 @@ class SpatialAudioEngine {
         airLift.amount = (s.ambience * 0.8f).coerceIn(0f, 1f)
         val ambTrim = 0.45f + 1.1f * s.ambience.coerceIn(0f, 1f)
         for (i in streamTrim.indices) streamTrim[i] = 1f
-        streamTrim[StemSeparator.WIDE_L] = 0.85f + 0.5f * s.width
-        streamTrim[StemSeparator.WIDE_R] = streamTrim[StemSeparator.WIDE_L]
+        // Pads carry most of the sense of envelopment, so they sit a little proud of
+        // unity by default rather than merely being "not lost".
+        val padTrim = 1.05f + 0.85f * s.padLevel.coerceIn(0f, 1f) + 0.25f * s.width
+        streamTrim[StemSeparator.WIDE_L] = padTrim
+        streamTrim[StemSeparator.WIDE_R] = padTrim
         streamTrim[StemSeparator.AMB_L] = ambTrim
         streamTrim[StemSeparator.AMB_R] = ambTrim
         streamTrim[StemSeparator.AIR_L] = ambTrim * 0.9f
@@ -445,6 +461,7 @@ class SpatialAudioEngine {
         heightR.configure(virtualHeightElevation, s.height, sr)
 
         // --- output stage ---
+        binaural.cueScale = 1f + 0.55f * s.imaging.coerceIn(0f, 1f)
         binaural.configure(layout, s.strength.coerceIn(0f, 1f), s.height)
         folddown.configure(layout)
 
@@ -576,7 +593,7 @@ class SpatialAudioEngine {
             val inL = propagationL.push(dryL)
             val inR = propagationR.push(dryR)
 
-            gains.tick()
+            gains.tick(MAX_SPEAKERS, speakerCount)
             for (k in 0 until speakerCount) busses[k] = 0f
             var base: Int
             val mid: Float
@@ -586,11 +603,13 @@ class SpatialAudioEngine {
                 // --- Immerse 3.0: separate, enhance, then place each part ---------
                 separator.processSample(inL, inR, streamBuf)
 
-                streamBuf[StemSeparator.BASS] = virtualBass.process(streamBuf[StemSeparator.BASS])
+                streamBuf[StemSeparator.BASS] = bassEngine.process(streamBuf[StemSeparator.BASS])
                 streamBuf[StemSeparator.LEAD] = vocalEnhancer.process(streamBuf[StemSeparator.LEAD])
                 streamBuf[StemSeparator.PERC_C] = shaperCentre.process(streamBuf[StemSeparator.PERC_C])
                 streamBuf[StemSeparator.PERC_L] = shaperLeft.process(streamBuf[StemSeparator.PERC_L])
                 streamBuf[StemSeparator.PERC_R] = shaperRight.process(streamBuf[StemSeparator.PERC_R])
+                streamBuf[StemSeparator.INST_L] = instExciter.process(streamBuf[StemSeparator.INST_L])
+                streamBuf[StemSeparator.INST_R] = instExciterR.process(streamBuf[StemSeparator.INST_R])
                 streamBuf[StemSeparator.WIDE_L] =
                     decorrelators[0].process(streamBuf[StemSeparator.WIDE_L], 0.5f)
                 streamBuf[StemSeparator.WIDE_R] =
@@ -654,6 +673,9 @@ class SpatialAudioEngine {
             wetR = heightR.process(wetR)
 
             // --- late reverb: 8-line modulated FDN, fed through the pre-delay ---
+            // Skipped outright when the scene is dry: eight modulated delay lines and
+            // eight one-poles per sample is the single most expensive stage here.
+            if (reverbAmount > 1e-4f) {
             val send = predelay.push(mid) * reverbAmount
             var mean = 0f
             for (n in 0 until FDN_LINES) {
@@ -674,6 +696,7 @@ class SpatialAudioEngine {
 
             wetL += revL
             wetR += revR
+            }
 
             // --- §7.2 air absorption on the spatialised path only ---
             wetL = airL2.process(airL1.process(wetL, airLs1), airLs2)
@@ -687,6 +710,11 @@ class SpatialAudioEngine {
             val alignedR = if (stemMode) dryDelayR.push(dryR) else dryR
             var outL = alignedL * dg + wetL * wg
             var outR = alignedR * dg + wetR * wg
+
+            // Analogue colour: a level-tracked second harmonic, the thing that makes a
+            // perfectly linear digital chain stop sounding clinical.
+            outL = warmthL.process(outL)
+            outR = warmthR.process(outR)
 
             // --- loudness match: the render must not arrive louder than the source --
             val makeup = loudness.correction(alignedL, alignedR, outL, outR)
@@ -706,23 +734,7 @@ class SpatialAudioEngine {
         renderedFrames += frames
         val elapsedNs = System.nanoTime() - startNs
         val blockNs = frames.toDouble() / sampleRate * 1e9
-        val cpu = if (blockNs > 0) (elapsedNs / blockNs * 100.0).toFloat() else 0f
-        lastBlockCpuPercent = cpu
-
-        // Graceful degradation: if the analysis path cannot keep up on this device,
-        // fall back to the band renderer instead of dropping buffers.
-        if (stemMode) {
-            cpuAverage += 0.08f * (cpu - cpuAverage)
-            if (cpuAverage > 70f) {
-                overloadedBlocks++
-                if (overloadedBlocks > 40) {
-                    stemMode = false
-                    analyserDegraded = true
-                }
-            } else if (overloadedBlocks > 0) {
-                overloadedBlocks--
-            }
-        }
+        lastBlockCpuPercent = if (blockNs > 0) (elapsedNs / blockNs * 100.0).toFloat() else 0f
     }
 
     /**

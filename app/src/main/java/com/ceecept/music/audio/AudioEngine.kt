@@ -209,7 +209,7 @@ class AudioEngine(
                 s.distance, s.width, s.roomSize, s.reverb, s.damping,
                 s.height, if (s.multiband) 1f else 0f, s.orbitHz,
                 if (s.stems) 1f else 0f, s.vocal, s.bass, s.punch, s.ambience,
-                s.rigMode.toFloat()
+                s.rigMode.toFloat(), s.imaging, s.warmth, s.padLevel
             ).joinToString(",")
             p[Keys.SPACE_PRESET] = _spacePreset.value
         }
@@ -268,7 +268,10 @@ class AudioEngine(
                     bass = if (list.size > 14) list[14] else 0.45f,
                     punch = if (list.size > 15) list[15] else 0.35f,
                     ambience = if (list.size > 16) list[16] else 0.5f,
-                    rigMode = if (list.size > 17) list[17].toInt() else 0
+                    rigMode = if (list.size > 17) list[17].toInt() else 0,
+                    imaging = if (list.size > 18) list[18] else 0.5f,
+                    warmth = if (list.size > 19) list[19] else 0.35f,
+                    padLevel = if (list.size > 20) list[20] else 0.6f
                 )
             }
         }

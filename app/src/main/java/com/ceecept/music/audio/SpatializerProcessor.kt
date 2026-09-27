@@ -58,7 +58,13 @@ data class SpaceParams(
     /** Rear/height ambience level, 0..1. */
     val ambience: Float = 0.5f,
     /** Speaker rig: 0 = follow the output route, 1 = stereo, 2 = 5.1, 3 = 7.1.4. */
-    val rigMode: Int = 0
+    val rigMode: Int = 0,
+    /** Imaging: how easy it is to point at each source, 0..1. */
+    val imaging: Float = 0.5f,
+    /** Analogue second-harmonic colour on the finished mix, 0..1. */
+    val warmth: Float = 0.35f,
+    /** Level of the wide pad/synth layer, 0..1. */
+    val padLevel: Float = 0.6f
 ) {
     fun toScene(): SpatialScene = SpatialScene(
         enabled = enabled,
@@ -78,7 +84,10 @@ data class SpaceParams(
         bass = bass,
         punch = punch,
         ambience = ambience,
-        rigMode = rigMode
+        rigMode = rigMode,
+        imaging = imaging,
+        warmth = warmth,
+        padLevel = padLevel
     )
 
     companion object {
@@ -88,53 +97,69 @@ data class SpaceParams(
             "Natural" to SpaceParams(
                 strength = 0.65f, width = 0.9f, roomSize = 0.4f, reverb = 0.22f,
                 damping = 0.45f, height = 0.7f,
-                vocal = 0.35f, bass = 0.3f, punch = 0.25f, ambience = 0.4f
+                vocal = 0.35f, bass = 0.3f, punch = 0.25f, ambience = 0.4f,
+                imaging = 0.45f, warmth = 0.4f, padLevel = 0.55f
             ),
             "Wide Stage" to SpaceParams(
                 strength = 0.8f, width = 1.35f, roomSize = 0.5f, reverb = 0.28f,
                 damping = 0.5f, height = 1f,
-                vocal = 0.45f, bass = 0.4f, punch = 0.4f, ambience = 0.6f
+                vocal = 0.45f, bass = 0.4f, punch = 0.4f, ambience = 0.6f,
+                imaging = 0.7f, warmth = 0.35f, padLevel = 0.75f
             ),
             "Concert Hall" to SpaceParams(
                 strength = 0.9f, elevation = 18f, distance = 3.2f, width = 1.1f,
                 roomSize = 0.85f, reverb = 0.55f, damping = 0.35f, height = 1.1f,
-                vocal = 0.5f, bass = 0.35f, punch = 0.2f, ambience = 0.8f
+                vocal = 0.5f, bass = 0.35f, punch = 0.2f, ambience = 0.8f,
+                imaging = 0.55f, warmth = 0.5f, padLevel = 0.8f
             ),
             "Club" to SpaceParams(
                 strength = 0.85f, distance = 1.2f, width = 1.2f, roomSize = 0.65f,
                 reverb = 0.4f, damping = 0.6f, height = 0.8f,
-                vocal = 0.4f, bass = 0.85f, punch = 0.7f, ambience = 0.5f
+                vocal = 0.4f, bass = 0.85f, punch = 0.7f, ambience = 0.5f,
+                imaging = 0.6f, warmth = 0.45f, padLevel = 0.6f
             ),
             "Cinema" to SpaceParams(
                 strength = 1f, elevation = 8f, distance = 2.6f, width = 1.25f,
                 roomSize = 0.75f, reverb = 0.45f, damping = 0.45f, height = 1.2f,
-                vocal = 0.7f, bass = 0.55f, punch = 0.45f, ambience = 0.75f, rigMode = 3
+                vocal = 0.7f, bass = 0.55f, punch = 0.45f, ambience = 0.75f, rigMode = 3,
+                imaging = 0.8f, warmth = 0.3f, padLevel = 0.7f
             ),
             "Overhead" to SpaceParams(
                 strength = 0.95f, elevation = 45f, distance = 2.2f, width = 1.15f,
                 roomSize = 0.6f, reverb = 0.35f, damping = 0.4f, height = 1.4f,
-                vocal = 0.5f, bass = 0.4f, punch = 0.35f, ambience = 0.95f, rigMode = 3
+                vocal = 0.5f, bass = 0.4f, punch = 0.35f, ambience = 0.95f, rigMode = 3,
+                imaging = 0.65f, warmth = 0.35f, padLevel = 0.9f
             ),
             "Intimate" to SpaceParams(
                 strength = 0.55f, distance = 0.8f, width = 0.7f, roomSize = 0.3f,
                 reverb = 0.15f, damping = 0.55f, height = 0.6f,
-                vocal = 0.8f, bass = 0.35f, punch = 0.3f, ambience = 0.25f
+                vocal = 0.8f, bass = 0.35f, punch = 0.3f, ambience = 0.25f,
+                imaging = 0.4f, warmth = 0.45f, padLevel = 0.4f
             ),
             "Orbit" to SpaceParams(
                 strength = 0.9f, elevation = 10f, distance = 2.0f, width = 1.1f,
                 roomSize = 0.6f, reverb = 0.35f, damping = 0.45f, height = 1f,
                 orbitHz = 0.08f,
-                vocal = 0.45f, bass = 0.5f, punch = 0.4f, ambience = 0.7f
+                vocal = 0.45f, bass = 0.5f, punch = 0.4f, ambience = 0.7f,
+                imaging = 0.75f, warmth = 0.35f, padLevel = 0.7f
             ),
             "Vocal Focus" to SpaceParams(
                 strength = 0.7f, elevation = 6f, distance = 1.3f, width = 1.0f,
                 roomSize = 0.35f, reverb = 0.18f, damping = 0.5f, height = 0.8f,
-                vocal = 1f, bass = 0.35f, punch = 0.3f, ambience = 0.35f
+                vocal = 1f, bass = 0.35f, punch = 0.3f, ambience = 0.35f,
+                imaging = 0.5f, warmth = 0.4f, padLevel = 0.45f
             ),
             "Bass Culture" to SpaceParams(
                 strength = 0.85f, distance = 1.4f, width = 1.15f, roomSize = 0.55f,
                 reverb = 0.3f, damping = 0.55f, height = 0.9f,
-                vocal = 0.4f, bass = 1f, punch = 0.75f, ambience = 0.45f
+                vocal = 0.4f, bass = 1f, punch = 0.75f, ambience = 0.45f,
+                imaging = 0.6f, warmth = 0.5f, padLevel = 0.65f
+            ),
+            "Airy Pads" to SpaceParams(
+                strength = 0.85f, elevation = 16f, distance = 2.2f, width = 1.3f,
+                roomSize = 0.7f, reverb = 0.4f, damping = 0.4f, height = 1.2f,
+                vocal = 0.45f, bass = 0.4f, punch = 0.3f, ambience = 0.8f,
+                imaging = 0.7f, warmth = 0.45f, padLevel = 1f
             )
         )
     }

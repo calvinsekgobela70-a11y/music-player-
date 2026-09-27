@@ -66,6 +66,13 @@ class BinauralVirtualizer(private val maxSpeakers: Int) {
      * height cue (user "height" control); [strength] scales the whole HRTF colouring so
      * the effect can be dialled back towards plain stereo.
      */
+    /**
+     * Imaging: multiplies the inter-aural cues. Above 1 the head is effectively made
+     * larger, which exaggerates ITD and ILD and makes directions easier to point at —
+     * the single most effective control for "where is this coming from?".
+     */
+    var cueScale = 1f
+
     fun configure(layout: SpeakerLayout, strength: Float, elevationBoost: Float) {
         count = minOf(layout.totalSpeakers, maxSpeakers)
         val s = strength.coerceIn(0f, 1f)
@@ -81,7 +88,7 @@ class BinauralVirtualizer(private val maxSpeakers: Int) {
             // --- 1. Interaural time difference (§6.2) -------------------------------
             // Positive = source on the right, so the left (far) ear is delayed.
             val itdSec = (Geometry.HEAD_WIDTH_M / Geometry.SPEED_OF_SOUND) * sin(azRad) * cos(elRad)
-            val itdSamples = itdSec * sampleRate * s
+            val itdSamples = itdSec * sampleRate * s * cueScale
             delayL[i].delay = (baseDelay + itdSamples * 0.5f).coerceAtLeast(0f)
             delayR[i].delay = (baseDelay - itdSamples * 0.5f).coerceAtLeast(0f)
 
@@ -89,7 +96,7 @@ class BinauralVirtualizer(private val maxSpeakers: Int) {
             // |sin(az)| drives the head shadow; the shelf leaves LF untouched, which is
             // exactly the "ild_db = 0 below 1 kHz" behaviour in calculate_ild().
             val shadow = abs(sin(azRad)) * cos(elRad)
-            val ildDb = shadow * 12f * s
+            val ildDb = shadow * 12f * s * cueScale
             val right = sp.azimuthDeg > 0f
             // Contralateral ear (opposite the source) loses high frequencies.
             shelfL[i].setHighShelf(1200f, if (right) -ildDb else 0f, sampleRate)
