@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,6 +57,7 @@ import com.ceecept.music.audio.EqualizerProcessor
 import com.ceecept.music.audio.SpaceParams
 import com.ceecept.music.audio.spatial.SpatialAudioEngine
 import com.ceecept.music.ui.components.SpatialRadar
+import com.ceecept.music.ui.components.StreamMeters
 import com.ceecept.music.ui.components.CeeceptTabRow
 import com.ceecept.music.ui.components.GainMeter
 import com.ceecept.music.ui.components.LogStudioSlider
@@ -460,6 +462,23 @@ private fun SpaceTab(app: CeeceptApp) {
 
     LaunchedEffect(Unit) { engine.refreshOutputRoute() }
 
+    // Telemetry from the audio thread: plain float arrays that the renderer overwrites
+    // every block. Poll them at 20 Hz rather than pushing state from the audio thread.
+    val dsp = engine.spatial.engine
+    var telemetryTick by remember { mutableStateOf(0) }
+    LaunchedEffect(params.enabled, params.stems) {
+        while (params.enabled && params.stems) {
+            kotlinx.coroutines.delay(50)
+            telemetryTick++
+        }
+    }
+    val streamLevels = remember { FloatArray(SpatialAudioEngine.OBJECTS) }
+    val streamAzimuths = remember { FloatArray(SpatialAudioEngine.OBJECTS) }
+    LaunchedEffect(telemetryTick) {
+        System.arraycopy(dsp.streamLevels, 0, streamLevels, 0, streamLevels.size)
+        System.arraycopy(dsp.streamAzimuths, 0, streamAzimuths, 0, streamAzimuths.size)
+    }
+
     fun update(next: SpaceParams) = engine.updateSpace(next)
 
     Column(
@@ -491,23 +510,36 @@ private fun SpaceTab(app: CeeceptApp) {
         )
 
         SectionHeader("The room — drag to move the stage")
-        SpatialRadar(
-            params = params,
-            layout = strategy.virtualLayout,
-            binaural = strategy.binauralize,
-            onChange = { az, distance ->
-                update(params.copy(azimuth = az, distance = distance))
-            }
-        )
+        key(telemetryTick) {
+            SpatialRadar(
+                params = params,
+                layout = strategy.virtualLayout,
+                binaural = strategy.binauralize,
+                onChange = { az, distance ->
+                    update(params.copy(azimuth = az, distance = distance))
+                },
+                streamAzimuths = streamAzimuths,
+                streamLevels = streamLevels
+            )
+        }
         Text(
-            text = "Dots are the objects the renderer is placing: violet = bass (kept " +
-                "centred and mono), red = mids, amber = treble (spread widest). Hollow " +
-                "rings are the height layer.",
+            text = if (params.stems) {
+                "Every dot is a part of the song the analyser found and placed: violet " +
+                    "bass, red vocal, amber drums, teal instruments, blue pads, grey room. " +
+                    "They move with the mix."
+            } else {
+                "Band mode: violet = bass (centred and mono), red = mids, amber = treble " +
+                    "(spread widest). Hollow rings are the height layer."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 28.dp, vertical = 10.dp)
         )
+        if (params.stems) {
+            key(telemetryTick) { StreamMeters(levels = streamLevels) }
+            Spacer(Modifier.height(10.dp))
+        }
 
         SectionHeader("Scene")
         StudioSlider(
@@ -549,6 +581,71 @@ private fun SpaceTab(app: CeeceptApp) {
             display = "${(params.height * 100).toInt()}%",
             onChange = { update(params.copy(height = it)) },
             modifier = Modifier.padding(horizontal = 20.dp)
+        )
+
+        SectionHeader("Instrument separation")
+        SwitchRow(
+            title = "Analyse and place instruments",
+            subtitle = "Splits the mix into bass, vocal, drums, instruments, pads and room, " +
+                "then gives each one its own position",
+            checked = params.stems,
+            onChange = { update(params.copy(stems = it)) }
+        )
+        StudioSlider(
+            label = "Vocal clarity",
+            value = params.vocal,
+            valueRange = 0f..1f,
+            display = "${(params.vocal * 100).toInt()}%",
+            onChange = { update(params.copy(vocal = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Bass depth",
+            value = params.bass,
+            valueRange = 0f..1f,
+            display = "${(params.bass * 100).toInt()}%",
+            onChange = { update(params.copy(bass = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Punch",
+            value = params.punch,
+            valueRange = 0f..1f,
+            display = "${(params.punch * 100).toInt()}%",
+            onChange = { update(params.copy(punch = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Room and air",
+            value = params.ambience,
+            valueRange = 0f..1f,
+            display = "${(params.ambience * 100).toInt()}%",
+            onChange = { update(params.copy(ambience = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+
+        SectionHeader("Speaker rig")
+        PresetChips(
+            options = listOf("Auto", "Stereo", "5.1", "7.1.4"),
+            selected = when (params.rigMode) {
+                1 -> "Stereo"
+                2 -> "5.1"
+                3 -> "7.1.4"
+                else -> "Auto"
+            },
+            onSelect = { label ->
+                update(
+                    params.copy(
+                        rigMode = when (label) {
+                            "Stereo" -> 1
+                            "5.1" -> 2
+                            "7.1.4" -> 3
+                            else -> 0
+                        }
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth()
         )
 
         SectionHeader("Object rendering")

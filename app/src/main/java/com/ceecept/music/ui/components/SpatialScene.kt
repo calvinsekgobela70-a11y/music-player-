@@ -4,7 +4,13 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -66,7 +72,11 @@ fun SpatialRadar(
     layout: SpeakerLayout,
     binaural: Boolean,
     onChange: (azimuth: Float, distance: Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Live measured azimuth of each separated stream, or null for the band model. */
+    streamAzimuths: FloatArray? = null,
+    /** Live RMS of each separated stream. */
+    streamLevels: FloatArray? = null
 ) {
     var sizePx by remember { mutableStateOf(IntSize.Zero) }
     val accent = CeeceptColors.Accent
@@ -190,6 +200,28 @@ fun SpatialRadar(
             val objectRadius = radius * distanceToRadius(sceneDistance)
             val elevationLift = (params.elevation / 90f).coerceIn(-0.5f, 1f)
 
+            // --- separated streams: draw what the analyser actually found ---------
+            if (params.stems && streamAzimuths != null && streamLevels != null) {
+                for (i in StreamGroups.ORDER.indices) {
+                    val g = StreamGroups.ORDER[i]
+                    for (s in g.indices) {
+                        if (s >= streamAzimuths.size) continue
+                        val level = if (s < streamLevels.size) streamLevels[s] else 0f
+                        val loud = (kotlin.math.sqrt(level * 6f)).coerceIn(0f, 1f)
+                        val dist = (sceneDistance * StreamGroups.DISTANCE[s]).coerceIn(0.3f, MAX_DISTANCE)
+                        val rr = radius * distanceToRadius(dist)
+                        val a = (params.azimuth + orbitAz + streamAzimuths[s]) * (Math.PI.toFloat() / 180f)
+                        val ox = cx + rr * sin(a)
+                        val oy = cy - rr * cos(a) -
+                            (StreamGroups.ELEVATION[s] / 90f + elevationLift) * 16.dp.toPx()
+                        val base = (5f + 7f * loud).dp.toPx()
+                        drawCircle(g.color.copy(alpha = 0.18f + 0.3f * loud), base * 2.1f, Offset(ox, oy))
+                        drawCircle(g.color.copy(alpha = 0.45f + 0.5f * loud), base, Offset(ox, oy))
+                    }
+                }
+                return@Canvas
+            }
+
             // Per-band pairs: the width of each band is the engine's own table.
             SpatialBands.TABLE.forEachIndexed { index, band ->
                 val bandWidth = if (params.multiband) band.spatialWidth else 1f
@@ -272,4 +304,73 @@ private fun emit(position: Offset, size: IntSize, onChange: (Float, Float) -> Un
     val maxRadius = minOf(cx, cy) * 0.86f
     val fraction = (sqrt(dx * dx + dy * dy) / maxRadius).coerceIn(0f, 1f)
     onChange(azimuth, radiusToDistance(fraction))
+}
+
+
+/**
+ * The fourteen renderer streams, grouped the way a listener thinks about a mix.
+ * Indices match [com.ceecept.music.audio.spatial.StemSeparator].
+ */
+object StreamGroups {
+    data class Group(val label: String, val indices: IntArray, val color: Color)
+
+    val ORDER = listOf(
+        Group("Bass", intArrayOf(0), CeeceptColors.Violet),
+        Group("Vocal", intArrayOf(1, 2), CeeceptColors.Accent),
+        Group("Drums", intArrayOf(3, 4, 5), CeeceptColors.Amber),
+        Group("Instruments", intArrayOf(6, 7), CeeceptColors.Teal),
+        Group("Pads", intArrayOf(8, 9), Color(0xFF64B5F6)),
+        Group("Room", intArrayOf(10, 11, 12, 13), Color(0xFFB0BEC5))
+    )
+
+    /** Mirrors the engine's per-stream distance and elevation tables. */
+    val DISTANCE = floatArrayOf(
+        0.95f, 0.85f, 1.00f, 1.05f, 1.05f, 1.05f, 1.10f, 1.10f,
+        1.25f, 1.25f, 1.70f, 1.70f, 1.45f, 1.45f
+    )
+    val ELEVATION = floatArrayOf(
+        -3f, 2f, 0f, 0f, 0f, 0f, 4f, 4f, 18f, 18f, 22f, 22f, 55f, 55f
+    )
+}
+
+/** Live level meters for the separated streams, one bar per group. */
+@Composable
+fun StreamMeters(levels: FloatArray, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        StreamGroups.ORDER.forEach { group ->
+            var sum = 0f
+            for (i in group.indices) if (i < levels.size) sum += levels[i]
+            val loud = kotlin.math.sqrt(sum * 5f).coerceIn(0f, 1f)
+            Column(
+                modifier = Modifier.weight(1f),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight(loud)
+                            .align(Alignment.BottomCenter)
+                            .background(group.color.copy(alpha = 0.55f + 0.4f * loud))
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = group.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+    }
 }

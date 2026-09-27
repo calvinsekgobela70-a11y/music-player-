@@ -582,6 +582,311 @@ for (const [id, speakers] of Object.entries(LAYOUTS)) {
     `knot err ${knotErr.toExponential(1)}°, C1 mismatch ${c1Err.toExponential(1)}°/s, overshoot ${(overshoot * 100).toFixed(1)}%`);
 }
 
+// ============================================================================
+//  Immerse 3.0 — separation, enhancement and gain staging
+// ============================================================================
+//
+// Ports of Fft.kt, StemSeparator.kt and Artifacts.kt (LookaheadLimiter,
+// LoudnessMatch). These verify the properties the renderer depends on:
+//   * the transform reconstructs exactly (nothing is coloured by analysis),
+//   * the fourteen masks are a partition of unity (separation cannot add energy),
+//   * each part of a known mix lands in the stream it should,
+//   * the limiter no longer distorts the bass it is holding down,
+//   * the loudness match returns the render to the level of the source.
+
+const N_FFT = 1024, HOP = 256, HALF = N_FFT / 2, MED_T = 17, MED_F = 11, EPSQ = 1e-12;
+
+function makeFft(n) {
+  const levels = Math.log2(n);
+  const cosT = new Float64Array(n / 2), sinT = new Float64Array(n / 2), rv = new Int32Array(n);
+  for (let i = 0; i < n / 2; i++) { cosT[i] = Math.cos(2 * Math.PI * i / n); sinT[i] = Math.sin(2 * Math.PI * i / n); }
+  for (let i = 0; i < n; i++) { let x = i, r = 0; for (let b = 0; b < levels; b++) { r = (r << 1) | (x & 1); x >>= 1; } rv[i] = r; }
+  function tr(re, im, conj) {
+    for (let i = 0; i < n; i++) { const j = rv[i]; if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+    for (let size = 2; size <= n; size *= 2) {
+      const h = size / 2, step = n / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = i, k = 0; j < i + h; j++, k += step) {
+          const c = cosT[k], sn = conj ? sinT[k] : -sinT[k], l = j + h;
+          const tre = re[l] * c - im[l] * sn, tim = re[l] * sn + im[l] * c;
+          re[l] = re[j] - tre; im[l] = im[j] - tim; re[j] += tre; im[j] += tim;
+        }
+      }
+    }
+  }
+  return {
+    forward: (re, im) => tr(re, im, false),
+    inverse: (re, im) => { tr(re, im, true); for (let i = 0; i < n; i++) { re[i] /= n; im[i] /= n; } },
+  };
+}
+function unpack2(re, im, n, aRe, aIm, bRe, bIm) {
+  const h = n / 2;
+  for (let k = 0; k <= h; k++) {
+    const kc = k === 0 ? 0 : n - k;
+    const r1 = re[k], i1 = im[k], r2 = re[kc], i2 = im[kc];
+    aRe[k] = 0.5 * (r1 + r2); aIm[k] = 0.5 * (i1 - i2);
+    bRe[k] = 0.5 * (i1 + i2); bIm[k] = -0.5 * (r1 - r2);
+  }
+}
+function pack2(aRe, aIm, bRe, bIm, n, re, im) {
+  const h = n / 2;
+  for (let k = 0; k <= h; k++) { re[k] = aRe[k] - bIm[k]; im[k] = aIm[k] + bRe[k]; }
+  for (let k = 1; k < h; k++) { const kc = n - k; re[kc] = aRe[k] + bIm[k]; im[kc] = -aIm[k] + bRe[k]; }
+}
+const hannW = (n) => Float64Array.from({ length: n }, (_, i) => 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n));
+const sqrtHannW = (n) => Float64Array.from(hannW(n), (v) => Math.sqrt(v));
+function wolaNorm(w, hop) { let s = 0; for (let i = 0; i < w.length; i += hop) s += w[i] * w[i]; return s; }
+function med(a, n) {
+  for (let i = 1; i < n; i++) { const v = a[i]; let j = i - 1; while (j >= 0 && a[j] > v) { a[j + 1] = a[j]; j--; } a[j + 1] = v; }
+  return a[n >> 1];
+}
+function bandW(f, lo0, lo1, hi0, hi1) {
+  if (f <= lo0 || f >= hi1) return 0;
+  if (f >= lo1 && f <= hi0) return 1;
+  if (f < lo1) { const t = (f - lo0) / Math.max(lo1 - lo0, 1e-6); return 0.5 - 0.5 * Math.cos(Math.PI * t); }
+  const t = (f - hi0) / Math.max(hi1 - hi0, 1e-6); return 0.5 + 0.5 * Math.cos(Math.PI * t);
+}
+
+// --- 13. transform round trip -------------------------------------------------
+{
+  const f = makeFft(N_FFT);
+  const a = new Float64Array(N_FFT), b = new Float64Array(N_FFT);
+  for (let i = 0; i < N_FFT; i++) { a[i] = Math.sin(i * 0.05) + 0.2 * Math.sin(i * 0.61); b[i] = Math.cos(i * 0.11) * 0.5; }
+  const re = Float64Array.from(a), im = Float64Array.from(b);
+  f.forward(re, im);
+  const aRe = new Float64Array(HALF + 1), aIm = new Float64Array(HALF + 1), bRe = new Float64Array(HALF + 1), bIm = new Float64Array(HALF + 1);
+  unpack2(re, im, N_FFT, aRe, aIm, bRe, bIm);
+  const re2 = new Float64Array(N_FFT), im2 = new Float64Array(N_FFT);
+  pack2(aRe, aIm, bRe, bIm, N_FFT, re2, im2);
+  f.inverse(re2, im2);
+  let e = 0;
+  for (let i = 0; i < N_FFT; i++) e = Math.max(e, Math.abs(re2[i] - a[i]), Math.abs(im2[i] - b[i]));
+  record('stereo FFT round trip', e < 1e-9, `max error ${e.toExponential(1)} (two channels, one transform)`);
+}
+
+// --- 14. weighted overlap-add reconstruction ----------------------------------
+{
+  const w = sqrtHannW(N_FFT), sc = 1 / wolaNorm(w, HOP), len = 8192;
+  const x = new Float64Array(len), out = new Float64Array(len);
+  for (let i = 0; i < len; i++) x[i] = Math.sin(i * 0.037) * 0.7 + Math.sin(i * 0.31) * 0.2;
+  for (let st = 0; st + N_FFT <= len; st += HOP) for (let i = 0; i < N_FFT; i++) out[st + i] += x[st + i] * w[i] * w[i] * sc;
+  let e = 0;
+  for (let i = N_FFT; i < len - N_FFT; i++) e = Math.max(e, Math.abs(out[i] - x[i]));
+  record('analysis/synthesis transparency', e < 1e-9, `max error ${e.toExponential(1)} — the STFT itself colours nothing`);
+}
+
+// --- 15/16/17. the separator on a known mix -----------------------------------
+function separatorRun(L, R, len) {
+  const f = makeFft(N_FFT), w = sqrtHannW(N_FFT), sc = 1 / wolaNorm(w, HOP), binHz = SR / N_FFT;
+  const wB = new Float64Array(HALF + 1), wV = new Float64Array(HALF + 1), wA = new Float64Array(HALF + 1);
+  for (let k = 0; k <= HALF; k++) {
+    const fr = k * binHz;
+    wB[k] = bandW(fr, 0, 0, 110, 180); wV[k] = bandW(fr, 140, 260, 5200, 8000); wA[k] = bandW(fr, 6500, 10000, 30000, 40000);
+  }
+  const hops = SR / HOP, c = Math.min(1, Math.max(0.05, 1 - Math.exp(-1 / (0.04 * hops))));
+  const hist = Array.from({ length: MED_T }, () => new Float64Array(HALF + 1));
+  let hp = 0;
+  const cohS = new Float64Array(HALF + 1), balS = new Float64Array(HALF + 1), panS = new Float64Array(HALF + 1);
+  const harmS = new Float64Array(HALF + 1).fill(0.5);
+  const S = 14;
+  const sRe = Array.from({ length: S }, () => new Float64Array(HALF + 1));
+  const sIm = Array.from({ length: S }, () => new Float64Array(HALF + 1));
+  const streams = Array.from({ length: S }, () => new Float64Array(len));
+  let sumMin = Infinity, sumMax = -Infinity;
+  const re = new Float64Array(N_FFT), im = new Float64Array(N_FFT);
+  const lRe = new Float64Array(HALF + 1), lIm = new Float64Array(HALF + 1), rRe = new Float64Array(HALF + 1), rIm = new Float64Array(HALF + 1);
+  const magMid = new Float64Array(HALF + 1), harm = new Float64Array(HALF + 1), perc = new Float64Array(HALF + 1);
+  const scratch = new Float64Array(Math.max(MED_T, MED_F));
+  for (let start = 0; start + N_FFT <= len; start += HOP) {
+    for (let i = 0; i < N_FFT; i++) { re[i] = L[start + i] * w[i]; im[i] = R[start + i] * w[i]; }
+    f.forward(re, im);
+    unpack2(re, im, N_FFT, lRe, lIm, rRe, rIm);
+    const h = hist[hp];
+    for (let k = 0; k <= HALF; k++) {
+      const mr = 0.5 * (lRe[k] + rRe[k]), mi = 0.5 * (lIm[k] + rIm[k]);
+      magMid[k] = Math.hypot(mr, mi); h[k] = magMid[k];
+    }
+    hp = (hp + 1) % MED_T;
+    for (let k = 0; k <= HALF; k++) { for (let t = 0; t < MED_T; t++) scratch[t] = hist[t][k]; harm[k] = med(scratch, MED_T); }
+    for (let k = 0; k <= HALF; k++) {
+      for (let j = 0; j < MED_F; j++) scratch[j] = magMid[Math.min(HALF, Math.max(0, k + j - (MED_F >> 1)))];
+      perc[k] = med(scratch, MED_F);
+    }
+    for (let k = 0; k <= HALF; k++) {
+      const lr = lRe[k], li = lIm[k], rr = rRe[k], ri = rIm[k];
+      const ml = Math.hypot(lr, li), mrr = Math.hypot(rr, ri);
+      const dot = lr * rr + li * ri;
+      const coherence = Math.min(1, Math.max(-1, dot / (ml * mrr + EPSQ)));
+      const balance = Math.min(1, Math.max(0, 2 * ml * mrr / (ml * ml + mrr * mrr + EPSQ)));
+      const pan = Math.min(1, Math.max(-1, (mrr - ml) / (ml + mrr + EPSQ)));
+      const hh = harm[k], pp = perc[k], harmMask = (hh * hh) / (hh * hh + pp * pp + EPSQ);
+      cohS[k] += c * (coherence - cohS[k]); balS[k] += c * (balance - balS[k]);
+      panS[k] += c * (pan - panS[k]); harmS[k] += c * (harmMask - harmS[k]);
+      const coh = cohS[k], bal = balS[k], pn = panS[k];
+      const mh = Math.min(1, Math.max(0, harmS[k])), mp = 1 - mh;
+      const bassW2 = wB[k], rest = 1 - bassW2;
+      let amb = bal * (1 - Math.abs(coh)), wide = bal * Math.max(0, -coh);
+      const diff = amb + wide;
+      if (diff > 1) { amb /= diff; wide /= diff; }
+      const direct = Math.min(1, Math.max(0, 1 - amb - wide));
+      const centre = (1 - Math.abs(pn)) * (1 - Math.abs(pn)) * Math.max(0, coh);
+      const ambM = rest * amb, wideM = rest * wide, dirM = rest * direct;
+      const dH = dirM * mh, dP = dirM * mp;
+      const cH = dH * centre, sH = dH - cH, cP = dP * centre, sP = dP - cP;
+      const leadM = cH * wV[k], centreM = cH - leadM;
+      const airM = ambM * wA[k], rearM = ambM - airM;
+      const total = bassW2 + leadM + centreM + cP + sP + sH + wideM + rearM + airM;
+      if (k > 2 && k < HALF - 2) { sumMin = Math.min(sumMin, total); sumMax = Math.max(sumMax, total); }
+      const midRe = 0.5 * (lr + rr), midIm = 0.5 * (li + ri);
+      const set = (idx, m, a2, b2) => { sRe[idx][k] = m * a2; sIm[idx][k] = m * b2; };
+      set(0, bassW2, midRe, midIm); set(1, leadM, midRe, midIm); set(2, centreM, midRe, midIm); set(3, cP, midRe, midIm);
+      set(4, sP, lr, li); set(5, sP, rr, ri); set(6, sH, lr, li); set(7, sH, rr, ri);
+      set(8, wideM, lr, li); set(9, wideM, rr, ri); set(10, rearM, lr, li); set(11, rearM, rr, ri);
+      set(12, airM, lr, li); set(13, airM, rr, ri);
+    }
+    const re2 = new Float64Array(N_FFT), im2 = new Float64Array(N_FFT);
+    for (let sIdx = 0; sIdx < S; sIdx += 2) {
+      pack2(sRe[sIdx], sIm[sIdx], sRe[sIdx + 1], sIm[sIdx + 1], N_FFT, re2, im2);
+      f.inverse(re2, im2);
+      for (let i = 0; i < N_FFT; i++) {
+        streams[sIdx][start + i] += re2[i] * w[i] * sc;
+        streams[sIdx + 1][start + i] += im2[i] * w[i] * sc;
+      }
+    }
+  }
+  return { streams, sumMin, sumMax };
+}
+
+{
+  const len = 36000;
+  const L = new Float64Array(len), R = new Float64Array(len);
+  const gt = { lead: new Float64Array(len), gtr: new Float64Array(len), pno: new Float64Array(len), pad: new Float64Array(len), bass: new Float64Array(len) };
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x3fffffff - 1; };
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    const lead = 0.30 * (Math.sin(2 * Math.PI * 440 * t) + 0.4 * Math.sin(2 * Math.PI * 880 * t));
+    const gtr = 0.25 * Math.sin(2 * Math.PI * 660 * t + 1.1);
+    const pno = 0.25 * Math.sin(2 * Math.PI * 523 * t + 0.4);
+    const kick = (i % 12000 < 60) ? 0.5 * Math.exp(-(i % 12000) / 20) * rnd() : 0;
+    const pad = 0.18 * Math.sin(2 * Math.PI * 330 * t + 0.2);
+    const bass = 0.35 * Math.sin(2 * Math.PI * 60 * t);
+    gt.lead[i] = lead; gt.gtr[i] = gtr; gt.pno[i] = pno; gt.pad[i] = pad; gt.bass[i] = bass;
+    L[i] = lead + gtr * 0.95 + pno * 0.1 + kick + pad + bass + rnd() * 0.06;
+    R[i] = lead + gtr * 0.1 + pno * 0.95 + kick - pad + bass + rnd() * 0.06;
+  }
+  const { streams, sumMin, sumMax } = separatorRun(L, R, len);
+  record('separation masks sum to unity', Math.abs(sumMin - 1) < 1e-6 && Math.abs(sumMax - 1) < 1e-6,
+    `every bin in [${sumMin.toFixed(6)}, ${sumMax.toFixed(6)}] — no energy created or lost`);
+
+  const from = 12000, to = 34000;
+  const rms = (a) => { let s = 0; for (let i = from; i < to; i++) s += a[i] * a[i]; return Math.sqrt(s / (to - from)); };
+  const corr = (a, b) => {
+    let sa = 0, sb = 0, sab = 0;
+    for (let i = from; i < to; i++) { sa += a[i] * a[i]; sb += b[i] * b[i]; sab += a[i] * b[i]; }
+    return sab / Math.sqrt(sa * sb + 1e-20);
+  };
+  const cBass = corr(streams[0], gt.bass), cLead = corr(streams[1], gt.lead);
+  const cGtr = corr(streams[6], gt.gtr), cPno = corr(streams[7], gt.pno);
+  const cPad = Math.abs(corr(streams[8], gt.pad));
+  record('stream assignment', cBass > 0.9 && cLead > 0.8 && cGtr > 0.8 && cPno > 0.8 && cPad > 0.8,
+    `bass ${cBass.toFixed(2)} · vocal ${cLead.toFixed(2)} · gtr(L) ${cGtr.toFixed(2)} · piano(R) ${cPno.toFixed(2)} · pad ${cPad.toFixed(2)}`);
+
+  let sumSq = 0;
+  for (let s2 = 0; s2 < 14; s2++) { const r = rms(streams[s2]); sumSq += r * r; }
+  const inE = rms(L) ** 2 + rms(R) ** 2;
+  const dbDiff = 10 * Math.log10(sumSq / inE);
+  record('separation energy balance', Math.abs(dbDiff) < 3.5,
+    `streams sum to ${dbDiff >= 0 ? '+' : ''}${dbDiff.toFixed(2)} dB of the programme`);
+
+  // Cross-talk: how much of the hard-left guitar leaks into the right instrument object
+  const leak = 20 * Math.log10((corr(streams[7], gt.gtr) ** 2 + 1e-12) ** 0.5 / (Math.abs(cGtr) + 1e-12));
+  record('inter-object leakage', leak < -12, `left source into the right object ${leak.toFixed(1)} dB`);
+}
+
+// --- 18. look-ahead limiter distortion ----------------------------------------
+{
+  // A 60 Hz sine 6 dB over the ceiling: the classic case where an instantaneous-attack
+  // limiter shreds the bass. Compare harmonic distortion of both designs.
+  const len = 48000, f0 = 60, amp = 2.0, ceiling = 0.977;
+  const x = Float64Array.from({ length: len }, (_, i) => amp * Math.sin(2 * Math.PI * f0 * i / SR));
+
+  const instant = new Float64Array(len);
+  {
+    let g = 1; const rel = 1 - Math.exp(-1 / (0.05 * SR));
+    for (let i = 0; i < len; i++) {
+      const peak = Math.abs(x[i]);
+      const req = peak > ceiling ? ceiling / peak : 1;
+      g = req < g ? req : g + rel * (req - g);
+      instant[i] = x[i] * g;
+    }
+  }
+  const looked = new Float64Array(len);
+  {
+    const look = Math.round(0.0015 * SR), holdLen = Math.round(0.025 * SR);
+    const buf = new Float64Array(look);
+    let wi = 0, g = 1, held = 1, hold = 0;
+    const att = 1 - Math.exp(-3 / look), rel = 1 - Math.exp(-1 / (0.12 * SR));
+    for (let i = 0; i < len; i++) {
+      const peak = Math.abs(x[i]);
+      const req = peak > ceiling ? ceiling / peak : 1;
+      // attack / hold / release: the hold spans more than one cycle of the lowest
+      // note, so a sustained bass note gets one steady gain instead of a gain that
+      // ripples at twice its frequency (which *is* distortion).
+      if (req < held) { held = req; hold = holdLen; }
+      else if (req < 0.999) { hold = holdLen; }
+      else if (hold > 0) hold--;
+      else held += rel * (req - held);
+      g += (held < g ? att : rel) * (held - g);
+      const d = buf[wi]; buf[wi] = x[i]; wi = (wi + 1) % look;
+      looked[i] = d * g;
+    }
+  }
+  const thd = (sig) => {
+    const from = 16000, n = 16000; // exactly 20 cycles of 60 Hz: no spectral leakage
+    let fund = 0, harm = 0;
+    for (let h = 1; h <= 12; h++) {
+      let re = 0, im = 0;
+      for (let i = 0; i < n; i++) {
+        const ph = 2 * Math.PI * f0 * h * i / SR;
+        re += sig[from + i] * Math.cos(ph); im += sig[from + i] * Math.sin(ph);
+      }
+      const mag = Math.hypot(re, im) / n;
+      if (h === 1) fund = mag; else harm += mag * mag;
+    }
+    return 20 * Math.log10(Math.sqrt(harm) / (fund + 1e-20));
+  };
+  const a = thd(instant), b = thd(looked);
+  record('limiter distortion (60 Hz, +6 dB)', b < -40 && b < a - 10,
+    `instant attack ${a.toFixed(1)} dB THD → look-ahead ${b.toFixed(1)} dB (limit -40)`);
+}
+
+// --- 19. loudness match --------------------------------------------------------
+{
+  // Simulate a render that comes back 4 dB hot and check the corrector returns it to
+  // the level of the source without acting like a compressor.
+  const len = SR * 3, coef = 1 - Math.exp(-1 / (0.3 * SR));
+  let inP = 0, outP = 0, g = 1, gTarget = 1;
+  const gCoef = 1 - Math.exp(-1 / (0.15 * SR));
+  let peakGain = 0, lastGain = 1;
+  const corrected = new Float64Array(len), source = new Float64Array(len);
+  for (let i = 0; i < len; i++) {
+    const t = i / SR;
+    const dry = 0.25 * (Math.sin(2 * Math.PI * 220 * t) + Math.sin(2 * Math.PI * 330 * t + 1));
+    const wet = dry * 1.585; // +4 dB
+    inP += coef * (dry * dry - inP);
+    outP += coef * (wet * wet - outP);
+    if (inP > 1e-6) gTarget = Math.min(2, Math.max(0.5, Math.sqrt(inP / outP)));
+    g += gCoef * (gTarget - g);
+    corrected[i] = wet * g; source[i] = dry;
+    peakGain = Math.max(peakGain, Math.abs(g - lastGain)); lastGain = g;
+  }
+  const rms = (a, from) => { let s = 0; for (let i = from; i < len; i++) s += a[i] * a[i]; return Math.sqrt(s / (len - from)); };
+  const err = 20 * Math.log10(rms(corrected, SR * 2) / rms(source, SR * 2));
+  record('loudness match', Math.abs(err) < 0.5 && peakGain < 1e-4,
+    `output within ${err >= 0 ? '+' : ''}${err.toFixed(2)} dB of source, max gain step ${peakGain.toExponential(1)}/sample`);
+}
+
 // --------------------------------------------------------------- report
 
 let failed = 0;

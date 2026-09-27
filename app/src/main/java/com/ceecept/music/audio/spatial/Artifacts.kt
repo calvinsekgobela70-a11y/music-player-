@@ -208,6 +208,9 @@ class LookaheadLimiter {
     private var length = 64
     private var writeIndex = 0
     private var gain = 1f
+    private var held = 1f
+    private var holdCounter = 0
+    private var holdLength = 1200
     private var attackCoef = 0.05f
     private var releaseCoef = 0.001f
     private var ceiling = 0.977f // -0.2 dBFS, leaving room for inter-sample peaks
@@ -216,7 +219,8 @@ class LookaheadLimiter {
         sampleRate: Int,
         lookaheadMs: Float = 1.5f,
         releaseMs: Float = 120f,
-        ceilingDb: Float = -0.2f
+        ceilingDb: Float = -0.2f,
+        holdMs: Float = 25f
     ) {
         length = ((lookaheadMs / 1000f) * sampleRate).toInt().coerceIn(8, 4096)
         if (bufL.size < length) {
@@ -228,6 +232,8 @@ class LookaheadLimiter {
         attackCoef = (1.0 - Math.exp(-3.0 / length)).toFloat().coerceIn(1e-6f, 1f)
         val releaseSamples = (releaseMs / 1000f) * sampleRate
         releaseCoef = (1.0 - Math.exp(-1.0 / releaseSamples)).toFloat().coerceIn(1e-6f, 1f)
+        // The hold spans more than one cycle of the lowest note the system reproduces.
+        holdLength = ((holdMs / 1000f) * sampleRate).toInt().coerceAtLeast(1)
         reset()
     }
 
@@ -239,7 +245,22 @@ class LookaheadLimiter {
         val r = buf[i + 1]
         val peak = maxOf(abs(l), abs(r))
         val required = if (peak > ceiling) ceiling / peak else 1f
-        gain += (if (required < gain) attackCoef else releaseCoef) * (required - gain)
+
+        // Attack / hold / release. Without the hold, a sustained bass note makes the
+        // gain ripple at twice its frequency — and a gain that moves at an audio rate
+        // is, by definition, distortion. Holding the reduction for longer than one
+        // cycle turns that into a single steady gain.
+        if (required < held) {
+            held = required
+            holdCounter = holdLength
+        } else if (required < 0.999f) {
+            holdCounter = holdLength
+        } else if (holdCounter > 0) {
+            holdCounter--
+        } else {
+            held += releaseCoef * (required - held)
+        }
+        gain += (if (held < gain) attackCoef else releaseCoef) * (held - gain)
 
         val dl = bufL[writeIndex]
         val dr = bufR[writeIndex]
@@ -259,6 +280,8 @@ class LookaheadLimiter {
         java.util.Arrays.fill(bufR, 0f)
         writeIndex = 0
         gain = 1f
+        held = 1f
+        holdCounter = 0
     }
 }
 
