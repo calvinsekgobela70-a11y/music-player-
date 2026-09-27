@@ -213,6 +213,16 @@ class SpatialAudioEngine {
     @Volatile var renderedFrames: Long = 0L
         private set
 
+    /**
+     * True when the renderer had to switch the analyser off to keep up (§11.2 asks for
+     * graceful degradation rather than dropouts). Cleared whenever the scene changes.
+     */
+    @Volatile var analyserDegraded: Boolean = false
+        private set
+
+    private var cpuAverage = 0f
+    private var overloadedBlocks = 0
+
     // ------------------------------------------------------------------ lifecycle
 
     fun prepare(sampleRate: Int) {
@@ -342,6 +352,9 @@ class SpatialAudioEngine {
 
         // --- Immerse 3.0 stem model -------------------------------------------
         stemMode = s.stems
+        analyserDegraded = false
+        overloadedBlocks = 0
+        cpuAverage = 0f
         virtualBass.amount = s.bass.coerceIn(0f, 1f)
         vocalEnhancer.amount = s.vocal.coerceIn(0f, 1f)
         val punch = s.punch.coerceIn(0f, 1f)
@@ -693,7 +706,23 @@ class SpatialAudioEngine {
         renderedFrames += frames
         val elapsedNs = System.nanoTime() - startNs
         val blockNs = frames.toDouble() / sampleRate * 1e9
-        lastBlockCpuPercent = if (blockNs > 0) (elapsedNs / blockNs * 100.0).toFloat() else 0f
+        val cpu = if (blockNs > 0) (elapsedNs / blockNs * 100.0).toFloat() else 0f
+        lastBlockCpuPercent = cpu
+
+        // Graceful degradation: if the analysis path cannot keep up on this device,
+        // fall back to the band renderer instead of dropping buffers.
+        if (stemMode) {
+            cpuAverage += 0.08f * (cpu - cpuAverage)
+            if (cpuAverage > 70f) {
+                overloadedBlocks++
+                if (overloadedBlocks > 40) {
+                    stemMode = false
+                    analyserDegraded = true
+                }
+            } else if (overloadedBlocks > 0) {
+                overloadedBlocks--
+            }
+        }
     }
 
     /**

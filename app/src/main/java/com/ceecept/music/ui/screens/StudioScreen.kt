@@ -493,13 +493,17 @@ private fun SpaceTab(app: CeeceptApp) {
             onChange = { update(params.copy(enabled = it)) }
         )
 
-        RendererCard(
-            layoutLabel = strategy.virtualLayout.label,
-            speakers = strategy.virtualLayout.totalSpeakers,
-            binaural = strategy.binauralize,
-            objects = SpatialAudioEngine.OBJECTS,
-            heightLayer = strategy.virtualLayout.hasHeightSpeakers
-        )
+        key(telemetryTick) {
+            RendererCard(
+                layoutLabel = strategy.virtualLayout.label,
+                speakers = strategy.virtualLayout.totalSpeakers,
+                binaural = strategy.binauralize,
+                objects = if (params.stems) SpatialAudioEngine.OBJECTS else SpatialAudioEngine.BAND_OBJECTS,
+                heightLayer = strategy.virtualLayout.hasHeightSpeakers,
+                cpuPercent = dsp.lastBlockCpuPercent,
+                degraded = dsp.analyserDegraded
+            )
+        }
 
         SectionHeader("Presets")
         PresetChips(
@@ -701,7 +705,9 @@ private fun RendererCard(
     speakers: Int,
     binaural: Boolean,
     objects: Int,
-    heightLayer: Boolean
+    heightLayer: Boolean,
+    cpuPercent: Float = 0f,
+    degraded: Boolean = false
 ) {
     Card(
         modifier = Modifier
@@ -724,6 +730,23 @@ private fun RendererCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (cpuPercent > 0.05f) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = String.format(Locale.US, "DSP load %.0f%% of real time", cpuPercent),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (degraded) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Analyser paused — this device could not keep up, so the " +
+                        "renderer fell back to band placement.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = CeeceptColors.Amber
+                )
+            }
         }
     }
 }

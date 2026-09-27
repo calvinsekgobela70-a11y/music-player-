@@ -1,10 +1,74 @@
-# Ceecept Immerse 2.0 — implementation notes
+# Ceecept Immerse 3.0 — implementation notes
 
 This is the map between the spatial-audio guidelines (`document_pages_1-75.txt`) and the
 code that implements them, plus every place where the implementation deliberately
 departs from the document and why.
 
 Everything lives in `app/src/main/java/com/ceecept/music/audio/spatial/`.
+
+## What version 3.0 adds
+
+Immerse 2.0 rendered the *mix* as objects: a centre object plus a left/right pair per
+frequency band. That is spatialisation, but every instrument still shares the same
+position, because the only thing separating them was frequency.
+
+3.0 separates the **music** first. A short-time Fourier analysis classifies every
+time-frequency bin by where it was panned, how coherent the two channels are, and
+whether it is tonal or percussive, then assigns it to one of fourteen streams — bass,
+lead vocal, other centre content, centred percussion, left/right percussion,
+left/right instruments, left/right pads, rear ambience and overhead air. Each stream
+becomes its own object with its own measured position, its own enhancement, and its own
+place on the twelve-speaker rig, which is how an object-based format like Atmos works.
+
+| Cue | What it separates | Source |
+|---|---|---|
+| Panning index (inter-channel level ratio) | where each instrument was mixed | Avendano & Jot, *A Frequency-Domain Approach to Multichannel Upmix*, JAES 52(7), 2004 |
+| Frequency-azimuth gain scaling | sharpening those positions into discrete sectors | Barry, Lawlor & Coyle, *Sound Source Separation: Azimuth Discrimination and Resynthesis*, DAFx-04 |
+| Inter-channel coherence (level-normalised) | direct sound vs room/reverb vs out-of-phase pads | Avendano & Jot, *Ambience Extraction and Synthesis from Stereo Signals*, ICASSP 2002 |
+| Median filtering along time / frequency | tonal instruments vs drums, Wiener masks with p = 2 | FitzGerald, *Harmonic/Percussive Separation Using Median Filtering*, DAFx-10 |
+| Missing fundamental / harmonic generation | bass you can hear on small speakers | virtual-bass literature (Oo & Gan; multiband harmonic generation, 2013) |
+
+**The masks are a partition of unity at every bin.** Nothing is duplicated and nothing
+is dropped, which is what makes the separation safe: it cannot add energy, so it cannot
+push the output into the limiter. The QA harness asserts this numerically every run.
+
+### Streams and where they are placed
+
+| # | Stream | Azimuth | Elev. | Dist. | Enhancement |
+|---|---|---|---|---|---|
+| 0 | Bass | centre | −3° | 0.95× | missing-fundamental harmonics, LFE feed |
+| 1 | Lead vocal | centre | +2° | 0.85× | presence bell, air shelf, de-esser |
+| 2 | Other centre | centre | 0° | 1.00× | — |
+| 3 | Centre percussion | centre | 0° | 1.05× | transient shaper |
+| 4/5 | Percussion L/R | measured, 25–70° | 0° | 1.05× | transient shaper |
+| 6/7 | Instruments L/R | measured, 20–75° | +4° | 1.10× | — |
+| 8/9 | Pads L/R | measured, 85–120° | +18° | 1.25× | all-pass decorrelation |
+| 10/11 | Room L/R | ±135° | +22° | 1.70× | decorrelation, level follows *Room and air* |
+| 12/13 | Air L/R | ±45° | +55° | 1.45× | decorrelation, high shelf |
+
+"Measured" means the energy-weighted mean panning index of the bins in that stream,
+smoothed over roughly a second: a guitar mixed 40° left is rendered by the speaker 40°
+left, and it moves if the mix moves.
+
+### Why it no longer distorts
+
+Three separate causes were found and fixed:
+
+1. **The limiter was the distortion.** The old one had instantaneous attack, so a bass
+   note arriving over the ceiling had its gain stepped within one sample, and the gain
+   then rippled at twice the note's frequency. A gain that moves at an audio rate *is*
+   a non-linearity. The new limiter delays the signal by 1.5 ms while the gain is
+   computed from the undelayed signal, and holds each reduction for 25 ms — longer than
+   one cycle of the lowest note. Measured on a 60 Hz tone driven 6 dB past the ceiling:
+   **−31.5 dB THD before, −302 dB after**.
+2. **The render came back louder than the source.** Spatialisation redistributes
+   energy and the wet path had a fixed 1.25× trim, so loud material sat on the limiter
+   permanently and everything sounded squashed and gritty. A 300 ms loudness matcher now
+   returns the output to the level of the input (±6 dB of authority, 150 ms smoothing),
+   so the limiter only catches real transients.
+3. **Dry and wet were 21 ms apart.** The analyser delays the wet path by one window;
+   mixing an undelayed dry signal against it comb-filters the top end, which is heard as
+   harshness. The dry path is now delayed to match.
 
 ## Signal path
 
@@ -55,6 +119,9 @@ decoder ─▶ EqualizerProcessor ─▶ DynamicsProcessor ─▶ SpatializerPro
 | §11.2 Capability detection | `OutputRouteDetector`, `PlaybackCapabilities`, `RenderStrategy.select` |
 | §12.1 Per-band spatial params | `SpatialBands.TABLE` — the guideline's six bands, verbatim |
 | §14 QA metrics | `tools/spatial-qa/qa.js` |
+| — Object separation | `Fft.kt`, `StemSeparator.kt` (new in 3.0) |
+| — Per-stream enhancement | `StreamEnhancers.kt` (new in 3.0) |
+| — Gain staging | `LookaheadLimiter`, `LoudnessMatch` in `Artifacts.kt` (new in 3.0) |
 
 ## Deviations, and the reason for each
 
@@ -107,7 +174,14 @@ decoder ─▶ EqualizerProcessor ─▶ DynamicsProcessor ─▶ SpatializerPro
    modulates level block-to-block (audible pumping). Same -0.1 dBFS ceiling, but with an
    instantaneous-attack / 50 ms-release follower so the gain is continuous.
 
-9. **Objects are derived from the stereo programme.** The guideline assumes authored
+9. **Centre streams are built from the mid signal.** The centre-assigned masks are
+   applied to (L+R)/2 rather than to L and R separately, which discards the tiny
+   out-of-phase residue of centred material. It measures as a 2.8 dB total energy
+   deficit across the fourteen streams, which the loudness matcher makes up. The
+   alternative — a fifteenth "residual" stream — costs another inverse transform for
+   something inaudible.
+
+10. **Objects are derived from the stereo programme.** The guideline assumes authored
    object stems. A music player gets a finished stereo mix, so the renderer decomposes
    it: the mid signal is the centre object, and the side signal is split into the six
    §12.1 bands, each contributing a left/right object pair whose angular offset is that
@@ -117,7 +191,7 @@ decoder ─▶ EqualizerProcessor ─▶ DynamicsProcessor ─▶ SpatializerPro
 ## QA
 
 `node tools/spatial-qa/qa.js` — a JavaScript port of the numeric kernels, measuring the
-§14.1 criteria. Current state: **17/17 pass**.
+§14.1 criteria. Current state: **25/25 pass**.
 
 ```
 azimuth error · 5.1_surround        max 0.000° (limit 5°)
@@ -133,6 +207,14 @@ ITD / ILD                           0.583 ms at 90°, 8.5 dB shelf at 45°
 distance cues                       monotonic level / cutoff / wet
 doppler                             +182 cents at +34.3 m/s
 trajectory spline                   knot-exact, C1, 0.2% overshoot
+stereo FFT round trip               6.7e-16 (two channels, one transform)
+analysis/synthesis transparency     3.3e-16 — the STFT colours nothing
+separation masks sum to unity       every bin in [1.000000, 1.000000]
+stream assignment                   bass 1.00 · vocal 1.00 · gtr(L) 0.99 · piano(R) 0.99 · pad 1.00
+separation energy balance           streams sum to -2.76 dB of the programme
+inter-object leakage                -20.1 dB
+limiter distortion (60 Hz, +6 dB)   -31.5 dB THD -> -302.8 dB
+loudness match                      within 0.00 dB of source, 5.1e-5 max gain step
 ```
 
 ## Cost
@@ -147,3 +229,13 @@ Per stereo sample at 48 kHz, 7.1.4 + binaural (the heaviest path):
 | HRTF virtualiser | 12 delay lines + 72 biquads |
 | FDN reverb | 8 modulated delay lines + 8 one-poles |
 | Oversampled saturator | ~56 MACs (both channels) |
+
+Plus, per 256-sample hop when the analyser is running: one 1024-point complex FFT for
+the stereo pair, seven inverse FFTs (two mono streams packed into each), a 17-frame
+median along time and an 11-bin median along frequency for every one of 513 bins.
+That is roughly 80–120 Mflop/s — a few percent of one core on a modern phone, but the
+renderer measures its own block time and falls back to the band model if a device
+cannot keep up, rather than dropping buffers.
+
+Latency: 1024 samples of analysis (21.3 ms at 48 kHz) plus 1.5 ms of limiter
+look-ahead, inside the guideline's 50 ms budget.
