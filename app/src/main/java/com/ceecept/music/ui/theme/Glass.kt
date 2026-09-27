@@ -208,11 +208,9 @@ fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier {
     val interaction = androidx.compose.runtime.remember {
         androidx.compose.foundation.interaction.MutableInteractionSource()
     }
-    return this.then(
-        androidx.compose.foundation.clickable(
-            interactionSource = interaction,
-            indication = null,
-            onClick = onClick
-        )
+    return this.clickable(
+        interactionSource = interaction,
+        indication = null,
+        onClick = onClick
     )
 }
