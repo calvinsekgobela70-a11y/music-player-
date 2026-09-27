@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.ceecept.music.audio.spatial.OutputRouteDetector
 import com.ceecept.music.audio.spatial.PlaybackCapabilities
 import com.ceecept.music.audio.spatial.RenderStrategy
+import com.ceecept.music.audio.spatial.SpeakerLayouts
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -78,9 +79,7 @@ class AudioEngine(
         runCatching {
             routeDetector.observe { caps ->
                 _capabilities.value = caps
-                val strategy = RenderStrategy.select(caps)
-                _renderStrategy.value = strategy
-                spatial.strategy.set(strategy)
+                applyStrategy(caps)
             }
         }
     }
@@ -90,10 +89,25 @@ class AudioEngine(
         runCatching {
             val caps = routeDetector.detect()
             _capabilities.value = caps
-            val strategy = RenderStrategy.select(caps)
-            _renderStrategy.value = strategy
-            spatial.strategy.set(strategy)
+            applyStrategy(caps)
         }
+    }
+
+    /**
+     * Resolve the virtual speaker rig. Normally this follows the output route (§11.2),
+     * but the user can pin it: "7.1.4" keeps the full twelve-speaker arrangement around
+     * the head even on earbuds, which is what the binaural renderer is happiest with.
+     */
+    private fun applyStrategy(caps: PlaybackCapabilities) {
+        val auto = RenderStrategy.select(caps)
+        val strategy = when (_spaceParams.value.rigMode) {
+            1 -> auto.copy(virtualLayout = SpeakerLayouts.STEREO)
+            2 -> auto.copy(virtualLayout = SpeakerLayouts.SURROUND_5_1)
+            3 -> auto.copy(virtualLayout = SpeakerLayouts.IMMERSIVE_7_1_4)
+            else -> auto
+        }
+        _renderStrategy.value = strategy
+        spatial.strategy.set(strategy)
     }
 
     // ---------- Equalizer ----------
@@ -145,9 +159,11 @@ class AudioEngine(
     // ---------- Spatial ----------
 
     fun updateSpace(params: SpaceParams, presetName: String = "Custom") {
+        val previous = _spaceParams.value
         _spaceParams.value = params
         _spacePreset.value = presetName
         spatial.params.set(params)
+        if (previous.rigMode != params.rigMode) applyStrategy(_capabilities.value)
         scheduleSave()
     }
 
@@ -191,7 +207,9 @@ class AudioEngine(
             p[Keys.SPACE] = listOf(
                 if (s.enabled) 1f else 0f, s.strength, s.azimuth, s.elevation,
                 s.distance, s.width, s.roomSize, s.reverb, s.damping,
-                s.height, if (s.multiband) 1f else 0f, s.orbitHz
+                s.height, if (s.multiband) 1f else 0f, s.orbitHz,
+                if (s.stems) 1f else 0f, s.vocal, s.bass, s.punch, s.ambience,
+                s.rigMode.toFloat()
             ).joinToString(",")
             p[Keys.SPACE_PRESET] = _spacePreset.value
         }
@@ -244,7 +262,13 @@ class AudioEngine(
                     roomSize = list[6], reverb = list[7], damping = list[8],
                     height = if (list.size > 9) list[9] else 1f,
                     multiband = if (list.size > 10) list[10] > 0.5f else true,
-                    orbitHz = if (list.size > 11) list[11] else 0f
+                    orbitHz = if (list.size > 11) list[11] else 0f,
+                    stems = if (list.size > 12) list[12] > 0.5f else true,
+                    vocal = if (list.size > 13) list[13] else 0.45f,
+                    bass = if (list.size > 14) list[14] else 0.45f,
+                    punch = if (list.size > 15) list[15] else 0.35f,
+                    ambience = if (list.size > 16) list[16] else 0.5f,
+                    rigMode = if (list.size > 17) list[17].toInt() else 0
                 )
             }
         }

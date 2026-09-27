@@ -189,3 +189,126 @@ class SoftLimiter {
         gain = 1f
     }
 }
+
+/**
+ * Look-ahead brick-wall limiter — the fix for "the loud parts sound distorted".
+ *
+ * [SoftLimiter] has instantaneous attack, so a bass note arriving at full level gets
+ * its first samples squashed by a gain that steps within one sample. That step is a
+ * non-linearity, and on low frequencies it is plainly audible as distortion.
+ *
+ * Here the signal is delayed by the look-ahead window while the gain is computed from
+ * the *undelayed* signal, so the gain has the whole window to slide down and is already
+ * in place when the peak arrives. Nothing in the audio path changes faster than the
+ * attack time, so the limiter adds no harmonics of its own.
+ */
+class LookaheadLimiter {
+    private var bufL = FloatArray(128)
+    private var bufR = FloatArray(128)
+    private var length = 64
+    private var writeIndex = 0
+    private var gain = 1f
+    private var attackCoef = 0.05f
+    private var releaseCoef = 0.001f
+    private var ceiling = 0.977f // -0.2 dBFS, leaving room for inter-sample peaks
+
+    fun configure(
+        sampleRate: Int,
+        lookaheadMs: Float = 1.5f,
+        releaseMs: Float = 120f,
+        ceilingDb: Float = -0.2f
+    ) {
+        length = ((lookaheadMs / 1000f) * sampleRate).toInt().coerceIn(8, 4096)
+        if (bufL.size < length) {
+            bufL = FloatArray(length)
+            bufR = FloatArray(length)
+        }
+        ceiling = Math.pow(10.0, (ceilingDb / 20f).toDouble()).toFloat()
+        // Reach the target gain in roughly one look-ahead window.
+        attackCoef = (1.0 - Math.exp(-3.0 / length)).toFloat().coerceIn(1e-6f, 1f)
+        val releaseSamples = (releaseMs / 1000f) * sampleRate
+        releaseCoef = (1.0 - Math.exp(-1.0 / releaseSamples)).toFloat().coerceIn(1e-6f, 1f)
+        reset()
+    }
+
+    /** Current gain reduction in dB, for metering. */
+    fun reductionDb(): Float = (20.0 * Math.log10(gain.coerceIn(1e-4f, 1f).toDouble())).toFloat()
+
+    fun processFrame(buf: FloatArray, i: Int) {
+        val l = buf[i]
+        val r = buf[i + 1]
+        val peak = maxOf(abs(l), abs(r))
+        val required = if (peak > ceiling) ceiling / peak else 1f
+        gain += (if (required < gain) attackCoef else releaseCoef) * (required - gain)
+
+        val dl = bufL[writeIndex]
+        val dr = bufR[writeIndex]
+        bufL[writeIndex] = l
+        bufR[writeIndex] = r
+        writeIndex++
+        if (writeIndex >= length) writeIndex = 0
+
+        buf[i] = dl * gain
+        buf[i + 1] = dr * gain
+    }
+
+    fun latencySamples(): Int = length
+
+    fun reset() {
+        java.util.Arrays.fill(bufL, 0f)
+        java.util.Arrays.fill(bufR, 0f)
+        writeIndex = 0
+        gain = 1f
+    }
+}
+
+/**
+ * Loudness matching between the dry programme and the rendered output.
+ *
+ * Spatial rendering redistributes energy: a hard-panned guitar moved to a side speaker
+ * arrives at the ears differently, reverb adds energy, and separation splits it. Left
+ * alone, the result drifts a few dB louder, which pins the limiter and makes the whole
+ * mix sound compressed and gritty — the usual cause of "my music sounds distorted with
+ * the effect on".
+ *
+ * This measures both signals over a 300 ms window and corrects the difference with a
+ * slow, bounded gain, so the processed output sits at the same loudness as the source
+ * and the limiter only ever catches genuine transients.
+ */
+class LoudnessMatch {
+    private var inPower = 0f
+    private var outPower = 0f
+    private var coef = 0.0001f
+    private var gateLevel = 1e-6f
+    private val gain = SmoothedGain(1f)
+
+    fun configure(sampleRate: Int, windowMs: Float = 300f) {
+        val samples = (windowMs / 1000f) * sampleRate
+        coef = (1.0 - Math.exp(-1.0 / samples)).toFloat().coerceIn(1e-7f, 1f)
+        gain.setTimeConstant(150f, sampleRate)
+        gain.snap(1f)
+        inPower = 0f
+        outPower = 0f
+    }
+
+    /**
+     * Feed the dry and rendered frame; returns the gain to apply to the rendered frame.
+     * Bounded to ±6 dB so it can never become a compressor of its own.
+     */
+    fun correction(dryL: Float, dryR: Float, wetL: Float, wetR: Float): Float {
+        val ip = (dryL * dryL + dryR * dryR) * 0.5f
+        val op = (wetL * wetL + wetR * wetR) * 0.5f
+        inPower += coef * (ip - inPower)
+        outPower += coef * (op - outPower)
+        if (inPower > gateLevel && outPower > gateLevel * 0.01f) {
+            gain.target = Math.sqrt((inPower / outPower).toDouble()).toFloat().coerceIn(0.5f, 2f)
+        }
+        return gain.next()
+    }
+
+    fun reset() {
+        inPower = 0f
+        outPower = 0f
+        gain.snap(1f)
+    }
+}

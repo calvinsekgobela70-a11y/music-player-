@@ -30,7 +30,21 @@ data class SpatialScene(
     /** Orbit rate in Hz for the §8 trajectory demo mode; 0 = static scene. */
     val orbitHz: Float = 0f,
     /** §12 per-band spatial widths. */
-    val multiband: Boolean = true
+    val multiband: Boolean = true,
+
+    // ---- Immerse 3.0: object separation and per-stream enhancement ----
+    /** Analyse the mix and render its parts as individual objects. */
+    val stems: Boolean = true,
+    /** Presence/clarity lift on the extracted lead vocal, 0..1. */
+    val vocal: Float = 0.45f,
+    /** Psychoacoustic bass extension on the extracted bass stream, 0..1. */
+    val bass: Float = 0.45f,
+    /** Transient emphasis on the extracted percussion, 0..1. */
+    val punch: Float = 0.35f,
+    /** Level of the rear and height ambience streams, 0..1. */
+    val ambience: Float = 0.5f,
+    /** 0 = follow the output route, 1 = stereo, 2 = 5.1, 3 = 7.1.4. */
+    val rigMode: Int = 0
 )
 
 /**
@@ -59,8 +73,11 @@ class SpatialAudioEngine {
         const val MAX_SPEAKERS = 12
         const val BANDS = 6
 
-        /** 1 centre object + one left/right pair per band. */
-        const val OBJECTS = 1 + 2 * BANDS
+        /** Legacy band model: 1 centre object + one left/right pair per band. */
+        const val BAND_OBJECTS = 1 + 2 * BANDS
+
+        /** Object slots: the stem renderer needs the most, so it sets the size. */
+        const val OBJECTS = StemSeparator.STREAMS
 
         private const val EARLY_TAPS = 12
         private const val FDN_LINES = 8
@@ -141,13 +158,48 @@ class SpatialAudioEngine {
     private val airRs1 = BiquadState(); private val airRs2 = BiquadState()
     private val heightL = VirtualHeightFilter()
     private val heightR = VirtualHeightFilter()
-    private val limiter = SoftLimiter()
     private val overL = Oversampler2x()
     private val overR = Oversampler2x()
     private val overBuf = FloatArray(2)
 
     private var dryGain = 0.7f
     private var wetGain = 0.7f
+
+    // ---- Immerse 3.0: separation + per-stream enhancement ----
+    private val separator = StemSeparator()
+    private val streamBuf = FloatArray(StemSeparator.STREAMS)
+    private val streamTrim = FloatArray(StemSeparator.STREAMS) { 1f }
+    private val virtualBass = VirtualBass()
+    private val vocalEnhancer = VocalEnhancer()
+    private val shaperCentre = TransientShaper()
+    private val shaperLeft = TransientShaper()
+    private val shaperRight = TransientShaper()
+    private val decorrelators = Array(6) { Decorrelator(it) }
+    private val airLift = AirLift()
+    private var dryDelayL = DelayLine(64)
+    private var dryDelayR = DelayLine(64)
+    private var stemMode = false
+    private val lookahead = LookaheadLimiter()
+    private val loudness = LoudnessMatch()
+
+    /** Live per-stream levels for the UI (index = StemSeparator stream id). */
+    val streamLevels = FloatArray(StemSeparator.STREAMS)
+
+    /** Live per-stream azimuths for the UI, degrees. */
+    val streamAzimuths = FloatArray(StemSeparator.STREAMS)
+
+    /** Elevation, distance scale and diffusion of each stream object. */
+    private val streamElevation = floatArrayOf(
+        -3f, 2f, 0f, 0f, 0f, 0f, 4f, 4f, 18f, 18f, 22f, 22f, 55f, 55f
+    )
+    private val streamDistance = floatArrayOf(
+        0.95f, 0.85f, 1.00f, 1.05f, 1.05f, 1.05f, 1.10f, 1.10f,
+        1.25f, 1.25f, 1.70f, 1.70f, 1.45f, 1.45f
+    )
+    private val streamDiffuse = floatArrayOf(
+        0.35f, 0f, 0.05f, 0f, 0.02f, 0.02f, 0.05f, 0.05f,
+        0.25f, 0.25f, 0.65f, 0.65f, 0.5f, 0.5f
+    )
 
     // §8.1 orbit path, expressed in normalised time (0..1 = one revolution) so the
     // spline is built once in prepare() and never allocates on the audio thread.
@@ -185,6 +237,23 @@ class SpatialAudioEngine {
             tapSpacing[i] = 1f + i * 1.45f + (i * 37 % 11) * 0.21f
         }
 
+        // --- Immerse 3.0 stages ---
+        separator.prepare(sr)
+        virtualBass.prepare(sr)
+        vocalEnhancer.prepare(sr)
+        shaperCentre.prepare(sr); shaperLeft.prepare(sr); shaperRight.prepare(sr)
+        for (d in decorrelators) d.prepare(sr)
+        airLift.prepare(sr)
+        // The dry path is delayed to match the analysis window so dry and wet stay
+        // phase-aligned; otherwise the mix comb-filters.
+        val analysisLatency = separator.latencySamples()
+        dryDelayL = DelayLine(analysisLatency + 8)
+        dryDelayR = DelayLine(analysisLatency + 8)
+        dryDelayL.delay = analysisLatency.toFloat()
+        dryDelayR.delay = analysisLatency.toFloat()
+        lookahead.configure(sr, lookaheadMs = 1.5f, releaseMs = 120f, ceilingDb = -0.2f)
+        loudness.configure(sr)
+
         val lfoRates = floatArrayOf(0.09f, 0.13f, 0.07f, 0.17f, 0.11f, 0.19f, 0.15f, 0.23f)
         for (i in 0 until FDN_LINES) {
             lfoInc[i] = 2f * PI.toFloat() * lfoRates[i] / sr
@@ -214,7 +283,6 @@ class SpatialAudioEngine {
 
         gains.setTimeConstant(5f, sr) // §10.2: 5 ms, the guideline's smoothing window.
         binaural.prepare(sr)
-        limiter.configure(sr)
         sceneDirty = true
     }
 
@@ -250,7 +318,16 @@ class SpatialAudioEngine {
         heightL.clear(); heightR.clear()
         airLs1.clear(); airLs2.clear(); airRs1.clear(); airRs2.clear()
         overL.clear(); overR.clear()
-        limiter.reset()
+        lookahead.reset()
+        loudness.reset()
+        separator.reset()
+        virtualBass.reset()
+        vocalEnhancer.reset()
+        shaperCentre.reset(); shaperLeft.reset(); shaperRight.reset()
+        for (d in decorrelators) d.reset()
+        airLift.reset()
+        dryDelayL.clear(); dryDelayR.clear()
+        streamLevels.fill(0f)
         busses.fill(0f)
         orbitPhase = 0f
     }
@@ -262,6 +339,27 @@ class SpatialAudioEngine {
         val sr = sampleRate
         val s = scene
         if (lfeIndex == -1) lfeIndex = layout.speakers.indexOfFirst { it.isLfe }
+
+        // --- Immerse 3.0 stem model -------------------------------------------
+        stemMode = s.stems
+        virtualBass.amount = s.bass.coerceIn(0f, 1f)
+        vocalEnhancer.amount = s.vocal.coerceIn(0f, 1f)
+        val punch = s.punch.coerceIn(0f, 1f)
+        shaperCentre.amount = punch
+        shaperLeft.amount = punch
+        shaperRight.amount = punch
+        airLift.amount = (s.ambience * 0.8f).coerceIn(0f, 1f)
+        val ambTrim = 0.45f + 1.1f * s.ambience.coerceIn(0f, 1f)
+        for (i in streamTrim.indices) streamTrim[i] = 1f
+        streamTrim[StemSeparator.WIDE_L] = 0.85f + 0.5f * s.width
+        streamTrim[StemSeparator.WIDE_R] = streamTrim[StemSeparator.WIDE_L]
+        streamTrim[StemSeparator.AMB_L] = ambTrim
+        streamTrim[StemSeparator.AMB_R] = ambTrim
+        streamTrim[StemSeparator.AIR_L] = ambTrim * 0.9f
+        streamTrim[StemSeparator.AIR_R] = ambTrim * 0.9f
+        if (stemMode) {
+            updateStreamPlacement()
+        }
 
         // --- object geometry (§2.3, §12.1) ---
         val baseSpread = 30f * s.width
@@ -349,6 +447,31 @@ class SpatialAudioEngine {
     }
 
     /**
+     * Immerse 3.0 — place the separated streams.
+     *
+     * Each stream object takes the azimuth the analyser *measured* for it, so a guitar
+     * that was mixed 40 degrees left is rendered by the speaker 40 degrees left instead
+     * of being smeared across the front pair. Elevation, distance and diffusion come
+     * from the per-stream table: bass and lead stay near and dry at ear level, pads lift
+     * and widen, ambience goes to the rear, air goes overhead.
+     */
+    private fun updateStreamPlacement() {
+        val s = scene
+        val widthScale = s.width.coerceIn(0.2f, 1.5f)
+        for (o in 0 until StemSeparator.STREAMS) {
+            val measured = separator.azimuth[o]
+            val az = Geometry.wrapDeg(s.azimuthDeg + measured * widthScale)
+            streamAzimuths[o] = az
+            objAzimuth[o] = az
+            objElevation[o] = (streamElevation[o] * (0.4f + 0.6f * s.height.coerceIn(0f, 1.5f)) +
+                s.elevationDeg * (if (o >= StemSeparator.AMB_L) 0.3f else 1f)).coerceIn(-40f, 90f)
+            objDistance[o] = (s.distanceM * streamDistance[o]).coerceIn(0.3f, 20f)
+            objDiffuse[o] = streamDiffuse[o]
+        }
+        updateObjectGains()
+    }
+
+    /**
      * §4 — resolve every object to a normalised gain vector over the active layout.
      * Targets only; [SmoothedGainBank] interpolates them per sample (§10.2).
      */
@@ -416,6 +539,13 @@ class SpatialAudioEngine {
             propagationSmoother.target = Doppler.propagationDelaySamples(orbitDist, sampleRate)
         }
 
+        // The analyser re-measures where each part of the mix sits; refresh the object
+        // placement once per block (never per sample) so the objects follow the music.
+        if (stemMode) {
+            updateStreamPlacement()
+            System.arraycopy(separator.level, 0, streamLevels, 0, StemSeparator.STREAMS)
+        }
+
         val current = gains.current
         val reverbAmount = reverbSend
         val dg = dryGain
@@ -433,30 +563,65 @@ class SpatialAudioEngine {
             val inL = propagationL.push(dryL)
             val inR = propagationR.push(dryR)
 
-            val mid = (inL + inR) * 0.5f
-            val side = (inL - inR) * 0.5f
-
-            // --- §12 band decomposition of the stereo difference signal ---
-            sideSplitter.process(side, bandBuf)
-
-            // --- §4 object routing ---
             gains.tick()
             for (k in 0 until speakerCount) busses[k] = 0f
+            var base: Int
+            val mid: Float
+            var bassFeed = 0f
 
-            var base = 0
-            for (k in 0 until speakerCount) busses[k] += mid * current[k]
-            for (b in 0 until BANDS) {
-                val bandSample = bandBuf[b]
-                if (bandSample == 0f) continue
-                base = (1 + b * 2) * MAX_SPEAKERS
-                for (k in 0 until speakerCount) busses[k] += bandSample * current[base + k]
-                base += MAX_SPEAKERS
-                for (k in 0 until speakerCount) busses[k] -= bandSample * current[base + k]
+            if (stemMode) {
+                // --- Immerse 3.0: separate, enhance, then place each part ---------
+                separator.processSample(inL, inR, streamBuf)
+
+                streamBuf[StemSeparator.BASS] = virtualBass.process(streamBuf[StemSeparator.BASS])
+                streamBuf[StemSeparator.LEAD] = vocalEnhancer.process(streamBuf[StemSeparator.LEAD])
+                streamBuf[StemSeparator.PERC_C] = shaperCentre.process(streamBuf[StemSeparator.PERC_C])
+                streamBuf[StemSeparator.PERC_L] = shaperLeft.process(streamBuf[StemSeparator.PERC_L])
+                streamBuf[StemSeparator.PERC_R] = shaperRight.process(streamBuf[StemSeparator.PERC_R])
+                streamBuf[StemSeparator.WIDE_L] =
+                    decorrelators[0].process(streamBuf[StemSeparator.WIDE_L], 0.5f)
+                streamBuf[StemSeparator.WIDE_R] =
+                    decorrelators[1].process(streamBuf[StemSeparator.WIDE_R], 0.5f)
+                streamBuf[StemSeparator.AMB_L] =
+                    decorrelators[2].process(streamBuf[StemSeparator.AMB_L], 0.8f)
+                streamBuf[StemSeparator.AMB_R] =
+                    decorrelators[3].process(streamBuf[StemSeparator.AMB_R], 0.8f)
+                streamBuf[StemSeparator.AIR_L] =
+                    airLift.process(decorrelators[4].process(streamBuf[StemSeparator.AIR_L], 0.7f))
+                streamBuf[StemSeparator.AIR_R] =
+                    decorrelators[5].process(streamBuf[StemSeparator.AIR_R], 0.7f)
+
+                var sum = 0f
+                for (o in 0 until StemSeparator.STREAMS) {
+                    val sample = streamBuf[o] * streamTrim[o]
+                    sum += sample
+                    if (sample == 0f) continue
+                    base = o * MAX_SPEAKERS
+                    for (k in 0 until speakerCount) busses[k] += sample * current[base + k]
+                }
+                mid = sum * 0.5f
+                bassFeed = streamBuf[StemSeparator.BASS]
+            } else {
+                // --- legacy band model (§12): mid object + one pair per band ------
+                val m = (inL + inR) * 0.5f
+                val side = (inL - inR) * 0.5f
+                sideSplitter.process(side, bandBuf)
+                for (k in 0 until speakerCount) busses[k] += m * current[k]
+                for (b in 0 until BANDS) {
+                    val bandSample = bandBuf[b]
+                    if (bandSample == 0f) continue
+                    base = (1 + b * 2) * MAX_SPEAKERS
+                    for (k in 0 until speakerCount) busses[k] += bandSample * current[base + k]
+                    base += MAX_SPEAKERS
+                    for (k in 0 until speakerCount) busses[k] -= bandSample * current[base + k]
+                }
+                mid = m
+                bassFeed = m
             }
 
             // --- bass management: the LFE feed is the mono low band (§13 hints) ---
             if (lfeIndex >= 0) {
-                busses[lfeIndex] += subLow2.process(subLow.process(mid, subLowState), subLowState2)
+                busses[lfeIndex] += subLow2.process(subLow.process(bassFeed, subLowState), subLowState2)
             }
 
             // --- §7.3 early reflections, panned onto the same layout ---
@@ -501,14 +666,26 @@ class SpatialAudioEngine {
             wetL = airL2.process(airL1.process(wetL, airLs1), airLs2)
             wetR = airR2.process(airR1.process(wetR, airRs1), airRs2)
 
-            // --- mix, then §11.1 anti-clipping, then §10.1 oversampled safety clip ---
-            io[i] = dryL * dg + wetL * wg
-            io[i + 1] = dryR * dg + wetR * wg
-            // The limiter is a smoothed gain (linear, so it cannot alias) and holds the
-            // signal at -0.1 dBFS; the saturator behind it only ever catches
-            // inter-sample peaks, which keeps its distortion products tiny and lets 2x
-            // oversampling suppress them by >50 dB.
-            limiter.processFrame(io, i)
+            // --- mix ---------------------------------------------------------
+            // The dry path is delayed to the analysis latency so that dry and wet are
+            // time-aligned; mixing a 21 ms-early dry signal would comb-filter the top
+            // end, which is heard as harshness rather than as an echo.
+            val alignedL = if (stemMode) dryDelayL.push(dryL) else dryL
+            val alignedR = if (stemMode) dryDelayR.push(dryR) else dryR
+            var outL = alignedL * dg + wetL * wg
+            var outR = alignedR * dg + wetR * wg
+
+            // --- loudness match: the render must not arrive louder than the source --
+            val makeup = loudness.correction(alignedL, alignedR, outL, outR)
+            outL *= makeup
+            outR *= makeup
+
+            io[i] = outL
+            io[i + 1] = outR
+            // Look-ahead limiting (gain is in place before the peak arrives, so no
+            // distortion of its own) and then the oversampled clipper as a backstop for
+            // inter-sample peaks only.
+            lookahead.processFrame(io, i)
             io[i] = saturate(overL, io[i])
             io[i + 1] = saturate(overR, io[i + 1])
         }
