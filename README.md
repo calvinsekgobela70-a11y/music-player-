@@ -2,7 +2,7 @@
 
 **Ceecept** is an offline-first Android music player with an Apple Music-inspired interface and a
 studio-grade DSP engine: a **16-band parametric EQ**, a **3-band compressor with gates** plus a
-**lookahead brick-wall limiter**, and **Ceecept Immerse 3.1** — an object-based 3D audio renderer with instrument separation
+**lookahead brick-wall limiter**, and **Ceecept Immerse 3.2** — an object-based 3D audio renderer with instrument separation
 built to the spatial-audio guidelines in [`document_pages_1-75.txt`](document_pages_1-75.txt).
 
 No account. No ads. No internet permission — your music never leaves your phone.
@@ -29,13 +29,13 @@ No account. No ads. No internet permission — your music never leaves your phon
 | Offline | 100% offline: library from MediaStore, no network permission at all |
 | Library | Songs / Artists / Albums, instant search, Huawei-safe album-art recovery, continue listening, and sort by title/artist/album/date/recent/plays/duration/year |
 | Playback | Background service, notification + headset/Bluetooth controls, shuffle, repeat, seek |
-| Interface | iOS 18-style glossy glass surfaces, Apple Music-like animated artwork backdrop, Inter typeface (SF-spirited, bundled offline), spring-physics motion and seamless screen transitions |
+| Interface | iOS 18-style glossy glass surfaces, Apple Music-like fixed-square artwork and animated artwork backdrop, Inter typeface (SF-spirited, bundled offline), spring-physics motion and seamless screen transitions |
 | Equalizer | 16 bands (31 Hz – 16 kHz), per-band Q from centre spacing, musical proportional-Q or precision constant-Q, shelf end-bands, subsonic filter, auto headroom and live response graph |
 | Dynamics | Phase-corrected 3-band crossover, per-band gate, hybrid RMS/peak soft-knee compressor, auto make-up, program release, live gain-reduction meters and lookahead limiter |
 | Instrument separation | Every time-frequency bin of the mix is classified by panning index, inter-channel coherence and harmonic/percussive structure, and assigned to one of **14 streams** — bass, lead vocal, centre, drums (centre/L/R), instruments (L/R), pads (L/R), room (L/R) and overhead air. Each becomes its own object at its **measured** position |
-| Per-stream enhancement | Rebuilt bass path (sub shelf + 300 Hz box-cut + missing fundamental), vocal presence/exciter/de-esser, drum transient shaping, louder pads, room/air decorrelation, subtle analogue warmth |
+| Per-stream enhancement | Rebuilt bass path (sub shelf + stronger 285 Hz box-cut + controlled missing fundamental), vocal presence/exciter/de-esser, drum transient shaping, louder pads, room/air decorrelation, subtle analogue warmth |
 | Clean gain staging | Energy-preserving masks, 300 ms loudness matching, look-ahead limiter with 25 ms hold (**−302 dB THD** on bass vs −31.5 dB for an instantaneous limiter) |
-| Immerse 3D | **Object-based renderer**: 14 separated objects panned onto a virtual 7.1.4 / 5.1 / stereo rig with pairwise (VBAP) placement, then folded to two channels through a parametric HRTF. Imaging focus strengthens localisation cues, height/distance/reverb are modelled, and the rig can be pinned to 7.1.4 |
+| Immerse 3D | **Object-based renderer**: 14 separated objects panned onto a virtual 7.1.4 / 5.1 / stereo rig with pairwise (VBAP) placement, then folded to two channels through a parametric HRTF. Imaging focus uses more dramatic measured panning and stronger localisation cues, height/distance/reverb are modelled, and the rig can be pinned to 7.1.4 |
 | Spatial QA | `node tools/spatial-qa/qa.js` measures the guideline's §14 criteria — 25/25 pass (0.000° azimuth error, masks sum to 1.000000, separation correlation 0.99+, 53 dB alias suppression) |
 
 ## Try it in your browser (preview)
