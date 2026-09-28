@@ -3,6 +3,7 @@ package com.ceecept.music.playback
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.os.PowerManager
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -24,6 +25,7 @@ class PlayerService : MediaSessionService() {
 
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -39,6 +41,10 @@ class PlayerService : MediaSessionService() {
 
     private fun startEngine() {
         val app = applicationContext as CeeceptApp
+        val pm = getSystemService(POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Ceecept:PlaybackDSP").apply {
+            setReferenceCounted(false)
+        }
         val renderers = CeeceptRenderersFactory(this, app.engine)
         val exo = ExoPlayer.Builder(this, renderers)
             .setAudioAttributes(
@@ -52,6 +58,14 @@ class PlayerService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .build()
         exo.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    wakeLock?.let { if (!it.isHeld) it.acquire() }
+                } else {
+                    wakeLock?.let { if (it.isHeld) it.release() }
+                }
+            }
+
             override fun onPlayerError(error: PlaybackException) {
                 // Surface playback failures in the in-app crash report so a
                 // silent stop is diagnosable from the device.
@@ -101,6 +115,8 @@ class PlayerService : MediaSessionService() {
             player.release()
             release()
         }
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
         session = null
         player = null
         super.onDestroy()

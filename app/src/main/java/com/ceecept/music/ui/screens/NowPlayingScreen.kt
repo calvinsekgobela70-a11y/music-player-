@@ -2,12 +2,14 @@ package com.ceecept.music.ui.screens
 
 import android.graphics.Bitmap
 import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -27,6 +29,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -44,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -133,7 +139,14 @@ fun NowPlayingScreen(
                 .padding(horizontal = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .size(width = 86.dp, height = 7.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.White.copy(alpha = 0.36f))
+            )
+            Spacer(Modifier.height(18.dp))
             Box(modifier = Modifier.fillMaxWidth()) {
                 BouncyIconButton(
                     onClick = onClose,
@@ -171,40 +184,76 @@ fun NowPlayingScreen(
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
-            ArtworkView(
-                track = track,
-                repository = app.repository,
-                // fill = true: the art (or its gradient placeholder) always
-                // occupies the free space, so the layout never collapses.
+            Spacer(Modifier.height(22.dp))
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
-                cornerRadius = 30.dp,
-                thumbSize = 1024
-            )
-            Spacer(Modifier.height(28.dp))
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(32.dp))
+                    .background(Color.Black.copy(alpha = 0.18f))
+            ) {
+                val bmp = backdropBitmap
+                if (bmp != null) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    ArtworkView(
+                        track = track,
+                        repository = app.repository,
+                        modifier = Modifier.fillMaxSize(),
+                        cornerRadius = 32.dp,
+                        thumbSize = 512
+                    )
+                }
+            }
+            Spacer(Modifier.height(26.dp))
 
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineLarge,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.76f),
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineLarge,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White.copy(alpha = 0.58f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                BouncyIconButton(onClick = { }, contentDescription = "Favourite") {
+                    Icon(
+                        Icons.Filled.StarBorder,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.88f),
+                        modifier = Modifier.padding(8.dp).size(32.dp)
+                    )
+                }
+                BouncyIconButton(onClick = { }, contentDescription = "More") {
+                    Icon(
+                        Icons.Filled.MoreHoriz,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.88f),
+                        modifier = Modifier.padding(8.dp).size(30.dp)
+                    )
+                }
+            }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(10.dp))
             ImmerseChip(app = app, onClick = onOpenStudio)
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(16.dp))
 
             var scrubMs by remember { mutableStateOf<Long?>(null) }
             val shownMs = scrubMs ?: positionMs

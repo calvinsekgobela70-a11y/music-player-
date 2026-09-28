@@ -75,18 +75,18 @@ class BassEngine {
     var amount = 0f
 
     fun prepare(sampleRate: Int) {
-        rumble.setHighPass(24f, 0.7071f, sampleRate)
+        rumble.setHighPass(28f, 0.7071f, sampleRate)
         // The mud zone. Wide enough to clear the range, gentle enough to stay musical.
-        boxCut.setPeaking(300f, 1.0f, -4.5f, sampleRate)
-        subShelf.setLowShelf(58f, 4.5f, sampleRate)
-        subBand.setLowPass(75f, 0.7071f, sampleRate)
+        boxCut.setPeaking(285f, 0.85f, -7.0f, sampleRate)
+        subShelf.setLowShelf(54f, 2.8f, sampleRate)
+        subBand.setLowPass(68f, 0.7071f, sampleRate)
 
-        genHigh.setHighPass(35f, 0.7071f, sampleRate)
-        genLow.setLowPass(90f, 0.7071f, sampleRate)
-        postHigh.setHighPass(115f, 0.7071f, sampleRate)
-        postLow.setLowPass(420f, 0.7071f, sampleRate)
+        genHigh.setHighPass(32f, 0.7071f, sampleRate)
+        genLow.setLowPass(82f, 0.7071f, sampleRate)
+        postHigh.setHighPass(95f, 0.7071f, sampleRate)
+        postLow.setLowPass(360f, 0.7071f, sampleRate)
         // Keep the generated harmonics out of the mud zone we just cleared.
-        postTame.setPeaking(300f, 1.2f, -5f, sampleRate)
+        postTame.setPeaking(285f, 1.0f, -9f, sampleRate)
 
         envCoef = Dsp.envelopeCoef(25f, sampleRate)
         subAttack = Dsp.envelopeCoef(12f, sampleRate)   // slow enough to pass the knock
@@ -120,11 +120,11 @@ class BassEngine {
         val sub = subBand.process(y, subBandState)
         val sa = abs(sub)
         subEnv += (if (sa > subEnv) subAttack else subRelease) * (sa - subEnv)
-        val threshold = 0.12f
+        val threshold = 0.16f
         if (subEnv > threshold) {
             // 2.5:1 above the threshold, applied to the sub band only.
             val over = subEnv / threshold
-            val gain = (1f / Math.pow(over.toDouble(), 0.6).toFloat()).coerceIn(0.25f, 1f)
+            val gain = (1f / Math.pow(over.toDouble(), 0.42).toFloat()).coerceIn(0.42f, 1f)
             y += sub * (gain - 1f) * a
         }
 
@@ -133,8 +133,8 @@ class BassEngine {
         val sEnv = abs(src)
         srcEnv += envCoef * (sEnv - srcEnv)
 
-        val even = src * src * 4f          // 2nd harmonic: warmth
-        val odd = tanh(src * 3.0f)         // 3rd, 5th: definition
+        val even = src * src * 2.4f          // 2nd harmonic: warmth
+        val odd = tanh(src * 2.1f)         // 3rd, 5th: definition
         var gen = 0.55f * even + 0.45f * odd
         dcState += 0.0008f * (gen - dcState)
         gen -= dcState
@@ -145,7 +145,7 @@ class BassEngine {
         genEnv += envCoef * (gEnv - genEnv)
         val norm = if (genEnv > 1e-5f) (srcEnv / genEnv).coerceIn(0f, 4f) else 0f
 
-        return y + gen * norm * a * 0.85f
+        return y + gen * norm * a * 0.48f
     }
 }
 

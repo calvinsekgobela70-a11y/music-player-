@@ -249,7 +249,10 @@ class MusicRepository(
             if (bmp != null) {
                 artCache.put(key, bmp)
                 synchronized(artMisses) { artMisses.remove(key) }
-            } else {
+            } else if (sizePx <= 512) {
+                // Do not negative-cache a failed oversized decode. Some EMUI builds fail
+                // 768/1024 px embedded-art decodes while 320/512 succeeds; callers are
+                // allowed to retry smaller sizes immediately.
                 synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
             }
             bmp

@@ -346,7 +346,8 @@ class LoudnessMatch {
 
     /**
      * Feed the dry and rendered frame; returns the gain to apply to the rendered frame.
-     * Bounded to ±6 dB so it can never become a compressor of its own.
+     * Bounded narrowly so it cannot behave like a second compressor and hide the
+     * detail layer the user is trying to preserve. It only trims genuine level drift.
      */
     fun correction(dryL: Float, dryR: Float, wetL: Float, wetR: Float): Float {
         val ip = (dryL * dryL + dryR * dryR) * 0.5f
@@ -354,7 +355,7 @@ class LoudnessMatch {
         inPower += coef * (ip - inPower)
         outPower += coef * (op - outPower)
         if (inPower > gateLevel && outPower > gateLevel * 0.01f) {
-            gain.target = Math.sqrt((inPower / outPower).toDouble()).toFloat().coerceIn(0.5f, 2f)
+            gain.target = Math.sqrt((inPower / outPower).toDouble()).toFloat().coerceIn(0.82f, 1.18f)
         }
         return gain.next()
     }

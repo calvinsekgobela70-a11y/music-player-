@@ -374,12 +374,18 @@ class SpatialAudioEngine {
         shaperCentre.amount = punch
         shaperLeft.amount = punch
         shaperRight.amount = punch
-        airLift.amount = (s.ambience * 0.8f).coerceIn(0f, 1f)
+        airLift.amount = (0.18f + s.ambience * 0.95f).coerceIn(0f, 1f)
         val ambTrim = 0.45f + 1.1f * s.ambience.coerceIn(0f, 1f)
         for (i in streamTrim.indices) streamTrim[i] = 1f
         // Pads carry most of the sense of envelopment, so they sit a little proud of
         // unity by default rather than merely being "not lost".
-        val padTrim = 1.05f + 0.85f * s.padLevel.coerceIn(0f, 1f) + 0.25f * s.width
+        val focus = s.imaging.coerceIn(0f, 1f)
+        val padTrim = 1.45f + 1.15f * s.padLevel.coerceIn(0f, 1f) + 0.35f * s.width
+        val instTrim = 1.18f + 0.38f * focus
+        streamTrim[StemSeparator.INST_L] = instTrim
+        streamTrim[StemSeparator.INST_R] = instTrim
+        streamTrim[StemSeparator.PERC_L] = 1.08f + 0.18f * focus
+        streamTrim[StemSeparator.PERC_R] = streamTrim[StemSeparator.PERC_L]
         streamTrim[StemSeparator.WIDE_L] = padTrim
         streamTrim[StemSeparator.WIDE_R] = padTrim
         streamTrim[StemSeparator.AMB_L] = ambTrim
@@ -428,7 +434,7 @@ class SpatialAudioEngine {
         }
         dampCoef = Dsp.onePoleLowPassCoef(18000f - s.damping * 15500f, sr)
         predelay.delay = DistanceModel.PREDELAY_MS / 1000f * sr
-        reverbSend = DistanceModel.reverbWet(s.distanceM) * (0.4f + 1.2f * s.reverb)
+        reverbSend = DistanceModel.reverbWet(s.distanceM) * (0.24f + 0.85f * s.reverb)
 
         // --- early reflections (§7.3) ---
         val firstArrivalMs = DistanceModel.earlyReflectionDelayMs(s.distanceM)
@@ -461,7 +467,7 @@ class SpatialAudioEngine {
         heightR.configure(virtualHeightElevation, s.height, sr)
 
         // --- output stage ---
-        binaural.cueScale = 1f + 0.55f * s.imaging.coerceIn(0f, 1f)
+        binaural.cueScale = 1f + 1.05f * s.imaging.coerceIn(0f, 1f)
         binaural.configure(layout, s.strength.coerceIn(0f, 1f), s.height)
         folddown.configure(layout)
 
@@ -469,8 +475,11 @@ class SpatialAudioEngine {
         val distanceGain = (DistanceModel.attenuationLinear(s.distanceM) /
             DistanceModel.attenuationLinear(REFERENCE_DISTANCE_M)).coerceIn(0.35f, 2.0f)
         val strength = s.strength.coerceIn(0f, 1f)
-        dryGain = cos(strength * (PI.toFloat() / 2f) * 0.85f)
-        wetGain = sin(strength * (PI.toFloat() / 2f)) * 1.25f * distanceGain
+        // Preserve detail: the separated spatial layer should open the image, not bury
+        // the original transients and vocal consonants. Keep a strong dry-detail spine
+        // and let the wet layer add width/depth around it.
+        dryGain = (1f - 0.34f * strength).coerceIn(0.62f, 1f)
+        wetGain = sin(strength * (PI.toFloat() / 2f)) * (0.82f + 0.22f * s.width) * distanceGain
 
         propagationSmoother.target = Doppler.propagationDelaySamples(s.distanceM, sr)
         sceneDirty = false
@@ -487,7 +496,7 @@ class SpatialAudioEngine {
      */
     private fun updateStreamPlacement() {
         val s = scene
-        val widthScale = s.width.coerceIn(0.2f, 1.5f)
+        val widthScale = (s.width * (1f + 0.95f * s.imaging.coerceIn(0f, 1f))).coerceIn(0.45f, 2.8f)
         for (o in 0 until StemSeparator.STREAMS) {
             val measured = separator.azimuth[o]
             val az = Geometry.wrapDeg(s.azimuthDeg + measured * widthScale)
@@ -676,9 +685,9 @@ class SpatialAudioEngine {
             // Skipped outright when the scene is dry: eight modulated delay lines and
             // eight one-poles per sample is the single most expensive stage here.
             if (reverbAmount > 1e-4f) {
-            val send = predelay.push(mid) * reverbAmount
-            var mean = 0f
-            for (n in 0 until FDN_LINES) {
+                val send = predelay.push(mid) * reverbAmount
+                var mean = 0f
+                for (n in 0 until FDN_LINES) {
                 lfoPhase[n] += lfoInc[n]
                 if (lfoPhase[n] > 2f * PI.toFloat()) lfoPhase[n] -= 2f * PI.toFloat()
                 fdnLines[n].delay = fdnBase[n] * (1f + 0.004f * sin(lfoPhase[n]))
@@ -687,15 +696,15 @@ class SpatialAudioEngine {
                 fdnRead[n] = fdnDamp[n] * fdnFeedback[n]
                 mean += fdnRead[n]
             }
-            mean = mean * 2f / FDN_LINES
-            for (n in 0 until FDN_LINES) {
+                mean = mean * 2f / FDN_LINES
+                for (n in 0 until FDN_LINES) {
                 fdnLines[n].store(send * 0.4f + (fdnRead[n] - mean))
             }
-            val revL = (fdnRead[0] - fdnRead[2] + fdnRead[4] - fdnRead[6]) * 0.32f
-            val revR = (-fdnRead[1] + fdnRead[3] - fdnRead[5] + fdnRead[7]) * 0.32f
+                val revL = (fdnRead[0] - fdnRead[2] + fdnRead[4] - fdnRead[6]) * 0.26f
+                val revR = (-fdnRead[1] + fdnRead[3] - fdnRead[5] + fdnRead[7]) * 0.26f
 
-            wetL += revL
-            wetR += revR
+                wetL += revL
+                wetR += revR
             }
 
             // --- §7.2 air absorption on the spatialised path only ---

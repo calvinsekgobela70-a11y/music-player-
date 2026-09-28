@@ -199,9 +199,9 @@ class StemSeparator {
         azimuth[LEAD] = 0f
         azimuth[CENTER] = 0f
         azimuth[PERC_C] = 0f
-        azimuth[PERC_L] = -40f; azimuth[PERC_R] = 40f
-        azimuth[INST_L] = -35f; azimuth[INST_R] = 35f
-        azimuth[WIDE_L] = -100f; azimuth[WIDE_R] = 100f
+        azimuth[PERC_L] = -58f; azimuth[PERC_R] = 58f
+        azimuth[INST_L] = -62f; azimuth[INST_R] = 62f
+        azimuth[WIDE_L] = -125f; azimuth[WIDE_R] = 125f
         azimuth[AMB_L] = -135f; azimuth[AMB_R] = 135f
         azimuth[AIR_L] = -45f; azimuth[AIR_R] = 45f
     }
@@ -404,13 +404,14 @@ class StemSeparator {
         // Imaging expands the measured geometry: the further a source already sits from
         // the centre, the further out it is placed, which makes it easier to point at
         // without moving anything that was mixed up the middle.
-        val expand = 1f + 0.7f * imaging.coerceIn(0f, 1f)
-        azimuth[PERC_L] = smoothAz(azimuth[PERC_L], -meanPan(0, 25f, 70f) * expand)
-        azimuth[PERC_R] = smoothAz(azimuth[PERC_R], meanPan(1, 25f, 70f) * expand)
-        azimuth[INST_L] = smoothAz(azimuth[INST_L], -meanPan(2, 20f, 78f) * expand)
-        azimuth[INST_R] = smoothAz(azimuth[INST_R], meanPan(3, 20f, 78f) * expand)
-        azimuth[WIDE_L] = smoothAz(azimuth[WIDE_L], -meanPan(4, 85f, 125f))
-        azimuth[WIDE_R] = smoothAz(azimuth[WIDE_R], meanPan(5, 85f, 125f))
+        val focus = imaging.coerceIn(0f, 1f)
+        val expand = 1f + 1.45f * focus
+        azimuth[PERC_L] = smoothAz(azimuth[PERC_L], -meanPan(0, 38f, 92f) * expand)
+        azimuth[PERC_R] = smoothAz(azimuth[PERC_R], meanPan(1, 38f, 92f) * expand)
+        azimuth[INST_L] = smoothAz(azimuth[INST_L], -meanPan(2, 42f, 108f) * expand)
+        azimuth[INST_R] = smoothAz(azimuth[INST_R], meanPan(3, 42f, 108f) * expand)
+        azimuth[WIDE_L] = smoothAz(azimuth[WIDE_L], -meanPan(4, 115f, 150f))
+        azimuth[WIDE_R] = smoothAz(azimuth[WIDE_R], meanPan(5, 115f, 150f))
     }
 
     private fun meanPan(slot: Int, minDeg: Float, maxDeg: Float): Float {
@@ -421,7 +422,7 @@ class StemSeparator {
 
     private fun smoothAz(current: Float, target: Float): Float {
         val clamped = target.coerceIn(-150f, 150f)
-        return current + 0.08f * (clamped - current)
+        return current + 0.12f * (clamped - current)
     }
 
     // -------------------------------------------------------------- median filters

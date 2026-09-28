@@ -482,10 +482,16 @@ fun ArtworkView(
     cornerRadius: Dp = 12.dp,
     thumbSize: Int = 512
 ) {
-    var bitmap by remember(track?.id) { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(track?.id) {
+    var bitmap by remember(track?.id, thumbSize) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(track?.id, thumbSize) {
         bitmap = if (track != null && repository != null) {
-            repository.artwork(track, thumbSize)
+            // EMUI can fail large artwork decodes while the same embedded image works
+            // at a smaller size. Retry down the ladder before declaring "no cover".
+            var bmp = repository.artwork(track, thumbSize)
+            if (bmp == null && thumbSize > 768) bmp = repository.artwork(track, 768)
+            if (bmp == null && thumbSize > 512) bmp = repository.artwork(track, 512)
+            if (bmp == null && thumbSize > 320) bmp = repository.artwork(track, 320)
+            bmp
         } else {
             null
         }
