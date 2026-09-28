@@ -171,7 +171,10 @@ class PlaybackHistory(context: Context) {
             .joinToString(";") { a ->
                 listOf(
                     a.trackId, a.bpm, a.key, if (a.minor) 1 else 0, a.energy, a.confidence,
-                    a.beatMs, a.introCueMs, a.outroCueMs
+                    a.beatMs, a.introCueMs, a.outroCueMs, a.downbeatOffsetMs,
+                    if (a.tempoStable) 1 else 0, if (a.mixable) 1 else 0, a.keyConfidence,
+                    a.firstOnsetMs, a.introEndMs, a.outroStartMs, a.lastAudibleMs,
+                    a.lastVocalEndMs, a.loudnessDb, a.lowEnergy, a.midEnergy, a.highEnergy
                 ).joinToString(",")
             }
         prefs.edit().putString(KEY_DJ_ANALYSIS, encoded).apply()
@@ -184,16 +187,35 @@ class PlaybackHistory(context: Context) {
             if (p.size < 6) return@forEach
             val id = p[0].toLongOrNull() ?: return@forEach
             val bpm = p[1].toFloatOrNull() ?: return@forEach
+            val beat = p.getOrNull(6)?.toLongOrNull()
+                ?: (60_000f / bpm.coerceIn(70f, 190f)).toLong()
+            val intro = p.getOrNull(7)?.toLongOrNull() ?: 0L
+            val outro = p.getOrNull(8)?.toLongOrNull() ?: 0L
+            val confidence = p[5].toFloatOrNull() ?: 0f
+            val energy = p[4].toFloatOrNull() ?: 0.4f
             djAnalyses[id] = DjTrackAnalysis(
                 trackId = id,
                 bpm = bpm,
                 key = p[2].toIntOrNull() ?: return@forEach,
                 minor = p[3] == "1",
-                energy = p[4].toFloatOrNull() ?: 0.4f,
-                confidence = p[5].toFloatOrNull() ?: 0f,
-                beatMs = p.getOrNull(6)?.toLongOrNull() ?: (60_000f / bpm.coerceIn(70f, 190f)).toLong(),
-                introCueMs = p.getOrNull(7)?.toLongOrNull() ?: 0L,
-                outroCueMs = p.getOrNull(8)?.toLongOrNull() ?: 0L
+                energy = energy,
+                confidence = confidence,
+                beatMs = beat,
+                introCueMs = intro,
+                outroCueMs = outro,
+                downbeatOffsetMs = p.getOrNull(9)?.toLongOrNull() ?: 0L,
+                tempoStable = (p.getOrNull(10)?.toIntOrNull() ?: 1) == 1,
+                mixable = (p.getOrNull(11)?.toIntOrNull() ?: if (confidence >= 0.42f) 1 else 0) == 1,
+                keyConfidence = p.getOrNull(12)?.toFloatOrNull() ?: confidence,
+                firstOnsetMs = p.getOrNull(13)?.toLongOrNull() ?: intro,
+                introEndMs = p.getOrNull(14)?.toLongOrNull() ?: intro,
+                outroStartMs = p.getOrNull(15)?.toLongOrNull() ?: outro,
+                lastAudibleMs = p.getOrNull(16)?.toLongOrNull() ?: 0L,
+                lastVocalEndMs = p.getOrNull(17)?.toLongOrNull() ?: outro,
+                loudnessDb = p.getOrNull(18)?.toFloatOrNull() ?: -18f,
+                lowEnergy = p.getOrNull(19)?.toFloatOrNull() ?: energy,
+                midEnergy = p.getOrNull(20)?.toFloatOrNull() ?: energy,
+                highEnergy = p.getOrNull(21)?.toFloatOrNull() ?: energy
             )
         }
     }

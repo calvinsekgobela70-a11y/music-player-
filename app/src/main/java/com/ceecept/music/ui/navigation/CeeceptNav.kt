@@ -1,5 +1,6 @@
 package com.ceecept.music.ui.navigation
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -14,6 +15,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -40,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -48,13 +52,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ceecept.music.CeeceptApp
 import com.ceecept.music.CrashReporter
+import com.ceecept.music.ThemeMode
 import com.ceecept.music.ui.screens.LibraryScreen
 import com.ceecept.music.ui.screens.MiniPlayer
 import com.ceecept.music.ui.screens.NowPlayingScreen
@@ -99,7 +107,25 @@ fun CeeceptRoot(app: CeeceptApp, useCustomFont: Boolean = true) {
         }
     }
 
+    val systemDark = isSystemInDarkTheme()
+    val dark = when (themeMode) {
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+        ThemeMode.SYSTEM -> systemDark
+    }
+
     CeeceptTheme(mode = themeMode, useCustomFont = useCustomFont) {
+        val view = LocalView.current
+        val barColor = MaterialTheme.colorScheme.background
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            window.statusBarColor = barColor.toArgb()
+            window.navigationBarColor = barColor.toArgb()
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !dark
+                isAppearanceLightNavigationBars = !dark
+            }
+        }
         var tab by rememberSaveable {
             mutableIntStateOf(
                 when (app.history.lastTab) {
@@ -132,7 +158,11 @@ fun CeeceptRoot(app: CeeceptApp, useCustomFont: Boolean = true) {
             )
         }
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
             Scaffold(
                 containerColor = MaterialTheme.colorScheme.background,
                 bottomBar = {

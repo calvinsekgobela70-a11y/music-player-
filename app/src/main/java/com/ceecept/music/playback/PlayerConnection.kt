@@ -29,6 +29,16 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Collections
 
+private data class DjTransitionPlan(
+    val type: Int,
+    val windowMs: Long,
+    val mixOutMs: Long,
+    val bpm: Float,
+    val compatibility: Float,
+    val harmonic: Boolean,
+    val tempoDiff: Float
+)
+
 /**
  * UI-facing bridge to [PlayerService]. Holds the MediaController, mirrors
  * player state into StateFlows and exposes transport controls.
@@ -253,10 +263,65 @@ class PlayerConnection(
     private fun currentAnalysis(): DjTrackAnalysis? =
         _currentTrack.value?.id?.let { history.djAnalysis(it) }
 
-    private fun transitionWindowMs(analysis: DjTrackAnalysis?): Long {
-        val beatMs = analysis?.beatMs ?: (60_000f / (analysis?.bpm ?: 120f)).toLong()
-        // Eight musical bars at 4/4, clamped for pop/hip-hop/R&B/song lengths.
-        return (beatMs * 32L).coerceIn(7_000L, 18_000L)
+    private fun nextAnalysis(c: MediaController): DjTrackAnalysis? {
+        val next = c.currentMediaItemIndex + 1
+        if (next !in 0 until c.mediaItemCount) return null
+        val id = runCatching { c.getMediaItemAt(next).mediaId.toLongOrNull() }.getOrNull()
+        return id?.let { history.djAnalysis(it) }
+    }
+
+    private fun transitionPlan(current: DjTrackAnalysis?, next: DjTrackAnalysis?, durationMs: Long): DjTransitionPlan {
+        val a = current
+        val b = next
+        val bpm = a?.bpm ?: b?.bpm ?: 120f
+        val beat = (a?.beatMs ?: (60_000f / bpm.coerceIn(70f, 190f)).toLong()).coerceIn(315L, 860L)
+        if (a == null || b == null || !a.mixable || !b.mixable || a.confidence < 0.42f || b.confidence < 0.42f) {
+            val w = 8_000L.coerceAtMost(durationMs / 4).coerceAtLeast(5_000L)
+            return DjTransitionPlan(
+                type = DjTransitionProcessor.TYPE_SIMPLE,
+                windowMs = w,
+                mixOutMs = (durationMs - w).coerceAtLeast(0L),
+                bpm = bpm,
+                compatibility = 0.2f,
+                harmonic = false,
+                tempoDiff = 99f
+            )
+        }
+        val diff = absTempoDiff(a.bpm, b.bpm)
+        val harmonic = harmonicCompatible(a, b)
+        val type = when {
+            diff > 10f -> DjTransitionProcessor.TYPE_ECHO_COLD
+            harmonic && diff <= 4f -> DjTransitionProcessor.TYPE_LONG_BLEND
+            harmonic && diff <= 10f -> DjTransitionProcessor.TYPE_MEDIUM_BLEND
+            !harmonic && diff <= 4f -> DjTransitionProcessor.TYPE_SHORT_BLEND
+            else -> DjTransitionProcessor.TYPE_DROP_MIX
+        }
+        val bars = when (type) {
+            DjTransitionProcessor.TYPE_LONG_BLEND -> if (a.energy > 0.55f && b.energy > 0.55f) 16 else 12
+            DjTransitionProcessor.TYPE_MEDIUM_BLEND -> 8
+            DjTransitionProcessor.TYPE_SHORT_BLEND -> 4
+            DjTransitionProcessor.TYPE_DROP_MIX -> 1
+            DjTransitionProcessor.TYPE_ECHO_COLD -> 1
+            else -> 4
+        }
+        val w = when (type) {
+            DjTransitionProcessor.TYPE_DROP_MIX -> (beat * 4L).coerceIn(1_200L, 3_800L)
+            DjTransitionProcessor.TYPE_ECHO_COLD -> (beat * 4L).coerceIn(1_200L, 4_500L)
+            else -> (beat * 4L * bars).coerceIn(5_000L, 38_000L)
+        }.coerceAtMost((durationMs * 0.32f).toLong().coerceAtLeast(4_000L))
+        val cue = a.outroStartMs.takeIf { it > 0L } ?: a.outroCueMs.takeIf { it > 0L }
+            ?: (durationMs - w)
+        val mixOut = phraseSnap(cue.coerceAtMost(durationMs - beat * 2L), beat, a.downbeatOffsetMs)
+            .coerceIn(0L, (durationMs - 800L).coerceAtLeast(0L))
+        return DjTransitionPlan(
+            type = type,
+            windowMs = w,
+            mixOutMs = mixOut,
+            bpm = bpm,
+            compatibility = compatibility(a, b, 0.2f),
+            harmonic = harmonic,
+            tempoDiff = diff
+        )
     }
 
     private fun updateDjTransition(c: MediaController) {
@@ -266,20 +331,21 @@ class PlayerConnection(
         }
         val duration = c.duration.takeIf { it > 0 } ?: return
         val position = c.currentPosition.coerceAtLeast(0)
-        val analysis = currentAnalysis()
-        val bpm = analysis?.bpm ?: 120f
-        val window = transitionWindowMs(analysis)
+        val current = currentAnalysis()
+        val next = nextAnalysis(c)
+        val plan = transitionPlan(current, next, duration)
         val mode: Int
         val progress: Float
         when {
-            position < window -> {
+            position < (current?.introEndMs?.takeIf { it > 0L } ?: plan.windowMs.coerceAtMost(12_000L)) -> {
+                val introWindow = (current?.introEndMs?.takeIf { it > 0L } ?: plan.windowMs.coerceAtMost(12_000L))
+                    .coerceIn(2_000L, 18_000L)
                 mode = DjTransitionProcessor.MODE_INTRO
-                progress = position.toFloat() / window
+                progress = (position.toFloat() / introWindow).coerceIn(0f, 1f)
             }
-            c.currentMediaItemIndex < c.mediaItemCount - 1 && position >= (analysis?.outroCueMs?.takeIf { it > 0L } ?: (duration - window)) -> {
-                val cue = analysis?.outroCueMs?.takeIf { it > 0L } ?: (duration - window)
+            c.currentMediaItemIndex < c.mediaItemCount - 1 && position >= plan.mixOutMs -> {
                 mode = DjTransitionProcessor.MODE_OUTRO
-                progress = ((position - cue).toFloat() / window).coerceIn(0f, 1f)
+                progress = ((position - plan.mixOutMs).toFloat() / plan.windowMs).coerceIn(0f, 1f)
             }
             else -> {
                 mode = DjTransitionProcessor.MODE_NONE
@@ -290,7 +356,9 @@ class PlayerConnection(
             enabled = mode != DjTransitionProcessor.MODE_NONE,
             mode = mode,
             progress = progress,
-            bpm = bpm
+            bpm = plan.bpm,
+            type = plan.type,
+            overlapIntensity = if (mode == DjTransitionProcessor.MODE_NONE) 0f else plan.compatibility.coerceIn(0.15f, 1f)
         )
     }
 
@@ -307,12 +375,15 @@ class PlayerConnection(
                 for (i in start until minOf(queueIds.size, start + 5)) add(queueIds[i])
             }
         }.distinct()
-        analyzeTracksAsync(idsToWarm.mapNotNull { repository.findById(it) })
+        analyzeTracksAsync(idsToWarm.mapNotNull { repository.findById(it) }, reorderWhenDone = true)
     }
 
-    private fun analyzeTracksAsync(tracks: List<Track>) {
+    private fun analyzeTracksAsync(tracks: List<Track>, reorderWhenDone: Boolean = false) {
         val todo = tracks.filter { history.djAnalysis(it.id) == null && analysingIds.add(it.id) }
-        if (todo.isEmpty()) return
+        if (todo.isEmpty()) {
+            if (reorderWhenDone) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+            return
+        }
         appScope.launch(Dispatchers.IO) {
             runCatching {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
@@ -327,7 +398,30 @@ class PlayerConnection(
                     analysingIds.remove(track.id)
                 }
             }
+            if (reorderWhenDone) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
         }
+    }
+
+    private fun reorderUpcomingQueueFromAnalyses() {
+        if (!_djMode.value) return
+        val c = _controller.value ?: return
+        if (c.mediaItemCount < 3) return
+        val ids = (0 until c.mediaItemCount).mapNotNull { i ->
+            runCatching { c.getMediaItemAt(i).mediaId.toLongOrNull() }.getOrNull()
+        }
+        if (ids.size != c.mediaItemCount) return
+        val tracks = repository.findAll(ids)
+        if (tracks.size != ids.size) return
+        val index = c.currentMediaItemIndex.coerceIn(0, tracks.lastIndex)
+        val current = tracks[index]
+        val future = tracks.drop(index + 1)
+        if (future.size < 2) return
+        val (ordered, _) = smartDjOrder(listOf(current) + future, 0)
+        val newQueue = tracks.take(index) + ordered
+        val pos = c.currentPosition.coerceAtLeast(0)
+        c.setMediaItems(newQueue.map { it.toMediaItem() }, index, pos)
+        c.prepare()
+        persistQueue(newQueue, index)
     }
 
     private fun smartDjOrder(tracks: List<Track>, startIndex: Int): Pair<List<Track>, Int> {
@@ -348,18 +442,34 @@ class PlayerConnection(
 
     private fun compatibility(a: DjTrackAnalysis?, b: DjTrackAnalysis?, fallback: Float): Float {
         if (a == null || b == null) return fallback
+        if (!a.mixable || !b.mixable) return fallback * 0.45f
         val bpmDiff = absTempoDiff(a.bpm, b.bpm)
-        val bpmScore = (1f - bpmDiff / 18f).coerceIn(0f, 1f)
-        val keyDistance = circularDistance(a.key, b.key).toFloat()
-        val keyScore = when {
-            a.key == b.key && a.minor == b.minor -> 1f
-            keyDistance <= 1f && a.minor == b.minor -> 0.86f
-            keyDistance <= 2f -> 0.64f
-            else -> 0.38f
+        val bpmScore = (1f - bpmDiff / 12f).coerceIn(0f, 1f)
+        val keyScore = harmonicScore(a, b)
+        val energyScore = (1f - kotlin.math.abs(a.energy - b.energy) * 1.8f).coerceIn(0f, 1f)
+        val loudnessScore = (1f - kotlin.math.abs(a.loudnessDb - b.loudnessDb) / 14f).coerceIn(0f, 1f)
+        val conf = ((a.confidence + b.confidence + a.keyConfidence + b.keyConfidence) * 0.25f).coerceIn(0.20f, 1f)
+        return (0.44f * bpmScore + 0.30f * keyScore + 0.18f * energyScore + 0.08f * loudnessScore) * conf
+    }
+
+    private fun harmonicCompatible(a: DjTrackAnalysis, b: DjTrackAnalysis): Boolean = harmonicScore(a, b) >= 0.72f
+
+    private fun harmonicScore(a: DjTrackAnalysis, b: DjTrackAnalysis): Float {
+        val sameKey = a.key == b.key
+        val adjacent = circularDistance(a.key, b.key) == 1
+        return when {
+            sameKey && a.minor == b.minor -> 1f
+            sameKey && a.minor != b.minor -> 0.86f // relative major/minor Camelot switch
+            adjacent && a.minor == b.minor -> 0.78f
+            circularDistance(a.key, b.key) == 2 && a.minor == b.minor -> 0.58f
+            else -> 0.28f
         }
-        val energyScore = (1f - kotlin.math.abs(a.energy - b.energy) * 2.2f).coerceIn(0f, 1f)
-        val conf = ((a.confidence + b.confidence) * 0.5f).coerceIn(0.25f, 1f)
-        return (0.50f * bpmScore + 0.30f * keyScore + 0.20f * energyScore) * conf
+    }
+
+    private fun phraseSnap(ms: Long, beatMs: Long, downbeatOffsetMs: Long): Long {
+        val phrase = (beatMs * 16L).coerceAtLeast(1L) // 4 bars in 4/4
+        val shifted = ms - downbeatOffsetMs
+        return (((shifted + phrase / 2) / phrase) * phrase + downbeatOffsetMs).coerceAtLeast(0L)
     }
 
     private fun fallbackDistance(a: Track, b: Track): Float {
@@ -400,7 +510,7 @@ class PlayerConnection(
         val (queue, index) = smartDjOrder(tracks, startIndex)
         persistQueue(queue, index)
         history.recordPlay(queue[index].id)
-        if (_djMode.value) analyzeTracksAsync(queue)
+        if (_djMode.value) analyzeTracksAsync(queue, reorderWhenDone = true)
         onMain { c ->
             c.setMediaItems(queue.map { it.toMediaItem() })
             c.seekToDefaultPosition(index)
@@ -417,7 +527,7 @@ class PlayerConnection(
             engine.dj.setTransition(false, DjTransitionProcessor.MODE_NONE, 0f, 120f)
         } else {
             warmDjAnalysis()
-            analyzeTracksAsync(repository.tracks.value)
+            analyzeTracksAsync(repository.tracks.value, reorderWhenDone = true)
         }
     }
 

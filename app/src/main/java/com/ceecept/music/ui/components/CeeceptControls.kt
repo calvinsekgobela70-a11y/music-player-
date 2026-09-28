@@ -69,6 +69,7 @@ import com.ceecept.music.data.MusicRepository
 import com.ceecept.music.data.Track
 import com.ceecept.music.ui.theme.CeeceptColors
 import com.ceecept.music.ui.theme.CeeceptMotion
+import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -484,16 +485,23 @@ fun ArtworkView(
 ) {
     var bitmap by remember(track?.id, thumbSize) { mutableStateOf<Bitmap?>(null) }
     LaunchedEffect(track?.id, thumbSize) {
-        bitmap = if (track != null && repository != null) {
-            // EMUI can fail large artwork decodes while the same embedded image works
-            // at a smaller size. Retry down the ladder before declaring "no cover".
-            var bmp = repository.artwork(track, thumbSize)
-            if (bmp == null && thumbSize > 768) bmp = repository.artwork(track, 768)
-            if (bmp == null && thumbSize > 512) bmp = repository.artwork(track, 512)
-            if (bmp == null && thumbSize > 320) bmp = repository.artwork(track, 320)
-            bmp
-        } else {
-            null
+        bitmap = null
+        if (track != null && repository != null) {
+            // EMUI/MediaStore can fail the first art query while its provider warms up.
+            // Retry a few times so song-list covers do not get stuck on placeholders.
+            val sizes = listOf(thumbSize, 768, 512, 320).filter { it > 0 }.distinct()
+            repeat(5) { attempt ->
+                var bmp: Bitmap? = null
+                for (size in sizes) {
+                    bmp = repository.artwork(track, size)
+                    if (bmp != null) break
+                }
+                if (bmp != null) {
+                    bitmap = bmp
+                    return@LaunchedEffect
+                }
+                delay(450L + attempt * 350L)
+            }
         }
     }
     Box(

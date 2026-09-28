@@ -59,11 +59,15 @@ class PlayerService : MediaSessionService() {
             .build()
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (isPlaying) {
-                    wakeLock?.let { if (!it.isHeld) it.acquire() }
-                } else {
-                    wakeLock?.let { if (it.isHeld) it.release() }
-                }
+                updatePlaybackWakeLock(exo)
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                updatePlaybackWakeLock(exo)
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                updatePlaybackWakeLock(exo)
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -79,6 +83,18 @@ class PlayerService : MediaSessionService() {
         addSession(session!!)
     }
 
+    private fun updatePlaybackWakeLock(exo: ExoPlayer) {
+        val shouldHold = exo.playWhenReady &&
+            exo.playbackState != Player.STATE_IDLE &&
+            exo.playbackState != Player.STATE_ENDED
+        val lock = wakeLock ?: return
+        if (shouldHold) {
+            if (!lock.isHeld) lock.acquire()
+        } else if (lock.isHeld) {
+            lock.release()
+        }
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -86,7 +102,8 @@ class PlayerService : MediaSessionService() {
         if (intent?.action == Intent.ACTION_VIEW) {
             intent.data?.let { playExternalUri(it) }
         }
-        return super.onStartCommand(intent, flags, startId)
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
     }
 
     private fun playExternalUri(uri: Uri) {

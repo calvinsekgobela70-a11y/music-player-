@@ -241,11 +241,13 @@ class MusicRepository(
         }
         return withContext(Dispatchers.IO) {
             val bmp = albumArtFile(track, sizePx)
-                ?: legacyAlbumArt(track)
+                ?: legacyAlbumArt(track, sizePx)
+                ?: providerThumbnail(track, sizePx)
                 ?: embeddedViaDescriptor(track, sizePx)
+                ?: embeddedViaPath(track, sizePx)
                 ?: embeddedViaUri(track, sizePx)
                 ?: folderArt(track, sizePx)
-                ?: providerThumbnail(track, sizePx)
+                ?: audioThumbnail(track, sizePx)
             if (bmp != null) {
                 artCache.put(key, bmp)
                 synchronized(artMisses) { artMisses.remove(key) }
@@ -267,8 +269,8 @@ class MusicRepository(
         null
     }
 
-    /** content://media/external/audio/albumart — served on most devices, all API levels. */
-    private fun legacyAlbumArt(track: Track): Bitmap? = try {
+    /** content://media/external/audio/albumart — served on many devices, all API levels. */
+    private fun legacyAlbumArt(track: Track, sizePx: Int): Bitmap? = try {
         if (track.albumId <= 0) {
             null
         } else {
@@ -277,7 +279,7 @@ class MusicRepository(
                 Uri.parse("content://media/external/audio/albumart"), track.albumId
             )
             context.contentResolver.openInputStream(artUri)?.use { stream ->
-                android.graphics.BitmapFactory.decodeStream(stream)
+                decodeStreamSampled(stream.readBytes(), sizePx)
             }
         }
     } catch (e: Exception) {
@@ -295,6 +297,23 @@ class MusicRepository(
             try {
                 retriever.setDataSource(pfd.fileDescriptor)
                 retriever.embeddedPicture?.let { decodeSampled(it, sizePx) }
+            } finally {
+                retriever.release()
+            }
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Reads art straight out of the file path when MediaStore still exposes DATA. */
+    private fun embeddedViaPath(track: Track, sizePx: Int): Bitmap? = try {
+        if (track.filePath.isBlank()) {
+            null
+        } else {
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(track.filePath)
+                retriever.embeddedPicture?.let { bytes -> decodeSampled(bytes, sizePx) }
             } finally {
                 retriever.release()
             }
@@ -340,8 +359,23 @@ class MusicRepository(
         null
     }
 
-    /** MediaProvider thumbnail (fast, size-capped). Some OEM providers return nothing. */
+    /** MediaProvider album thumbnail (fast, size-capped). API 29+ expects the Albums URI. */
     private fun providerThumbnail(track: Track, sizePx: Int): Bitmap? = try {
+        if (Build.VERSION.SDK_INT >= 29 && track.albumId > 0) {
+            val albumUri = ContentUris.withAppendedId(
+                MediaStore.Audio.Albums.EXTERNAL_CONTENT_URI,
+                track.albumId
+            )
+            context.contentResolver.loadThumbnail(albumUri, Size(sizePx, sizePx), null)
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    /** Last-chance file thumbnail. Some providers attach art to the audio item itself. */
+    private fun audioThumbnail(track: Track, sizePx: Int): Bitmap? = try {
         if (Build.VERSION.SDK_INT >= 29) {
             context.contentResolver.loadThumbnail(track.uri, Size(sizePx, sizePx), null)
         } else {
@@ -364,6 +398,8 @@ class MusicRepository(
     } catch (e: Exception) {
         null
     }
+
+    private fun decodeStreamSampled(bytes: ByteArray, sizePx: Int): Bitmap? = decodeSampled(bytes, sizePx)
 
     private fun decodeFileSampled(path: String, sizePx: Int): Bitmap? = try {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
