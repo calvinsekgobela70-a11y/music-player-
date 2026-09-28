@@ -36,19 +36,24 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -58,7 +63,6 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -92,6 +96,7 @@ private sealed interface LibraryRoute {
     data object Root : LibraryRoute
     data class Artist(val name: String) : LibraryRoute
     data class Album(val albumId: Long) : LibraryRoute
+    data class Playlist(val name: String) : LibraryRoute
 }
 
 @Composable
@@ -166,7 +171,8 @@ fun LibraryScreen(app: CeeceptApp) {
             LibraryRoute.Root -> LibraryRoot(
                 app = app,
                 onArtist = { route = LibraryRoute.Artist(it) },
-                onAlbum = { route = LibraryRoute.Album(it) }
+                onAlbum = { route = LibraryRoute.Album(it) },
+                onPlaylist = { route = LibraryRoute.Playlist(it) }
             )
             is LibraryRoute.Artist -> ArtistDetail(
                 app = app,
@@ -177,6 +183,11 @@ fun LibraryScreen(app: CeeceptApp) {
             is LibraryRoute.Album -> AlbumDetail(
                 app = app,
                 albumId = current.albumId,
+                onBack = { route = LibraryRoute.Root }
+            )
+            is LibraryRoute.Playlist -> PlaylistDetail(
+                app = app,
+                name = current.name,
                 onBack = { route = LibraryRoute.Root }
             )
         }
@@ -239,7 +250,8 @@ private fun PermissionGate(onGrant: () -> Unit) {
 private fun LibraryRoot(
     app: CeeceptApp,
     onArtist: (String) -> Unit,
-    onAlbum: (Long) -> Unit
+    onAlbum: (Long) -> Unit,
+    onPlaylist: (String) -> Unit
 ) {
     val tracks by app.repository.tracks.collectAsStateWithLifecycle()
     val isLoading by app.repository.isLoading.collectAsStateWithLifecycle()
@@ -261,6 +273,12 @@ private fun LibraryRoot(
             sortAscending,
             app.history
         )
+    }
+    val likedTracks = remember(tracks, query, historyRevision) {
+        tracks.filter { app.history.isLiked(it.id) && it.matches(query) }
+    }
+    val playlistNames = remember(query, historyRevision) {
+        app.history.playlistNames().filter { it.contains(query, ignoreCase = true) }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -296,7 +314,7 @@ private fun LibraryRoot(
         ContinueListening(app = app)
         Spacer(Modifier.height(10.dp))
         CeeceptTabRow(
-            tabs = listOf("Songs", "Artists", "Albums"),
+            tabs = listOf("Songs", "Liked", "Lists", "Artists", "Albums"),
             selected = tab,
             onSelect = { tab = it },
             modifier = Modifier
@@ -338,7 +356,17 @@ private fun LibraryRoot(
                             currentId = currentTrack?.id,
                             app = app
                         )
-                        1 -> ArtistList(
+                        1 -> SongList(
+                            tracks = likedTracks,
+                            currentId = currentTrack?.id,
+                            app = app
+                        )
+                        2 -> PlaylistList(
+                            app = app,
+                            names = playlistNames,
+                            onPlaylist = onPlaylist
+                        )
+                        3 -> ArtistList(
                             artists = app.repository.artists().filter {
                                 it.name.contains(query, ignoreCase = true)
                             },
@@ -503,7 +531,8 @@ private fun SongList(
     tracks: List<Track>,
     currentId: Long?,
     app: CeeceptApp,
-    contentPadding: PaddingValues = PaddingValues(bottom = 24.dp)
+    contentPadding: PaddingValues = PaddingValues(bottom = 24.dp),
+    onRemove: ((Track) -> Unit)? = null
 ) {
     LazyColumn(
         contentPadding = contentPadding,
@@ -514,7 +543,8 @@ private fun SongList(
                 track = track,
                 isCurrent = track.id == currentId,
                 app = app,
-                onClick = { app.playerConnection.playQueue(tracks, index) }
+                onClick = { app.playerConnection.playQueue(tracks, index) },
+                onRemove = onRemove?.let { remove -> { remove(track) } }
             )
         }
     }
@@ -526,9 +556,12 @@ private fun SongRow(
     track: Track,
     isCurrent: Boolean,
     app: CeeceptApp,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRemove: (() -> Unit)? = null
 ) {
     val accent = MaterialTheme.colorScheme.primary
+    val revision = app.history.revision.value
+    val liked = remember(track.id, revision) { app.history.isLiked(track.id) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -541,7 +574,7 @@ private fun SongRow(
             repository = app.repository,
             modifier = Modifier.size(52.dp),
             cornerRadius = 10.dp,
-            thumbSize = 256
+            thumbSize = 512
         )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
@@ -566,6 +599,28 @@ private fun SongRow(
                 Spacer(Modifier.width(8.dp))
             }
         }
+        BouncyIconButton(
+            onClick = { app.history.toggleLike(track.id) },
+            contentDescription = if (liked) "Unlike" else "Like"
+        ) {
+            Icon(
+                imageVector = if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                contentDescription = null,
+                tint = if (liked) CeeceptColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(6.dp).size(20.dp)
+            )
+        }
+        if (onRemove != null) {
+            BouncyIconButton(onClick = onRemove, contentDescription = "Remove from playlist") {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(6.dp).size(20.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(4.dp))
         Text(
             text = formatDuration(track.durationMs),
             style = MaterialTheme.typography.bodySmall,
@@ -601,6 +656,209 @@ private fun EqualizerBars() {
                     .background(CeeceptColors.Accent)
             )
         }
+    }
+}
+
+@Composable
+private fun PlaylistList(
+    app: CeeceptApp,
+    names: List<String>,
+    onPlaylist: (String) -> Unit
+) {
+    var newName by rememberSaveable { mutableStateOf("") }
+    LazyColumn(
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        item {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                TextField(
+                    value = newName,
+                    onValueChange = { newName = it.take(48) },
+                    placeholder = { Text("New playlist") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(16.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                Button(
+                    onClick = {
+                        app.history.createPlaylist(newName)
+                        newName = ""
+                    },
+                    enabled = newName.trim().isNotEmpty()
+                ) { Text("Create") }
+            }
+        }
+        if (names.isEmpty()) {
+            item {
+                EmptyPlaylistMessage()
+            }
+        } else {
+            items(names, key = { it }) { name ->
+                PlaylistRow(
+                    name = name,
+                    count = app.history.playlistIds(name).size,
+                    onClick = { onPlaylist(name) },
+                    onDelete = { app.history.deletePlaylist(name) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyPlaylistMessage() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 42.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = Icons.Filled.PlaylistPlay,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(48.dp)
+        )
+        Spacer(Modifier.height(10.dp))
+        Text("No playlists yet", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Create one here or add the playing song from Now Playing.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun PlaylistRow(
+    name: String,
+    count: Int,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(22.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .clickable { onClick() }
+            .padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(CeeceptColors.accentGradient()),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Filled.PlaylistPlay, contentDescription = null, tint = Color.White)
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "$count songs",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        BouncyIconButton(onClick = onDelete, contentDescription = "Delete playlist") {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(8.dp).size(22.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetail(app: CeeceptApp, name: String, onBack: () -> Unit) {
+    val revision = app.history.revision.value
+    val tracks = remember(name, revision) { app.repository.findAll(app.history.playlistIds(name)) }
+    val isPlaying by app.playerConnection.isPlaying.collectAsStateWithLifecycle()
+    val currentTrack by app.playerConnection.currentTrack.collectAsStateWithLifecycle()
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BouncyIconButton(onClick = onBack, contentDescription = "Back") {
+                Icon(
+                    Icons.Filled.ArrowBack,
+                    contentDescription = null,
+                    modifier = Modifier.padding(8.dp).size(24.dp)
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .padding(8.dp)
+                    .size(72.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(CeeceptColors.accentGradient()),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Filled.PlaylistPlay, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.headlineMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "${tracks.size} songs",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            BouncyIconButton(
+                onClick = {
+                    app.history.deletePlaylist(name)
+                    onBack()
+                },
+                contentDescription = "Delete playlist"
+            ) {
+                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.padding(8.dp).size(24.dp))
+            }
+        }
+        DetailActions(
+            onPlay = { if (tracks.isNotEmpty()) app.playerConnection.playQueue(tracks, 0) },
+            onShuffle = {
+                if (tracks.isNotEmpty()) {
+                    app.playerConnection.playQueue(tracks.shuffled(), 0)
+                    if (!isPlaying) app.playerConnection.togglePlayPause()
+                }
+            }
+        )
+        SongList(
+            tracks = tracks,
+            currentId = currentTrack?.id,
+            app = app,
+            onRemove = { app.history.removeFromPlaylist(name, it.id) }
+        )
     }
 }
 

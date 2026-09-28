@@ -22,10 +22,13 @@ class PlaybackHistory(context: Context) {
     /** id -> plays, id -> last played (epoch ms). Kept in memory, flushed on change. */
     private val plays = HashMap<Long, Int>()
     private val lastPlayed = HashMap<Long, Long>()
+    private val liked = HashSet<Long>()
+    private val playlists = LinkedHashMap<String, MutableList<Long>>()
+    private val djAnalyses = HashMap<Long, DjTrackAnalysis>()
 
     private val _revision = mutableStateOf(0)
 
-    /** Bumped whenever the statistics change, so Compose can recompose lists. */
+    /** Bumped whenever statistics, likes, playlists, or DJ analysis change. */
     val revision: State<Int> = _revision
 
     init {
@@ -38,6 +41,11 @@ class PlaybackHistory(context: Context) {
                 lastPlayed[id] = parts[2].toLongOrNull() ?: 0L
             }
         }
+        prefs.getString(KEY_LIKED, "")?.split(',')
+            ?.mapNotNull { it.toLongOrNull() }
+            ?.forEach { liked += it }
+        decodePlaylists(prefs.getString(KEY_PLAYLISTS, "") ?: "")
+        decodeDjAnalyses(prefs.getString(KEY_DJ_ANALYSIS, "") ?: "")
     }
 
     // ---------------------------------------------------------------- statistics
@@ -63,6 +71,142 @@ class PlaybackHistory(context: Context) {
             .take(limit).map { it.key }
 
     fun hasHistory(): Boolean = lastPlayed.isNotEmpty()
+
+    // ------------------------------------------------------------- likes
+
+    fun isLiked(id: Long): Boolean = liked.contains(id)
+
+    fun toggleLike(id: Long): Boolean {
+        if (id <= 0) return false
+        val nowLiked = if (liked.contains(id)) {
+            liked.remove(id)
+            false
+        } else {
+            liked.add(id)
+            true
+        }
+        prefs.edit().putString(KEY_LIKED, liked.joinToString(",")).apply()
+        _revision.value = _revision.value + 1
+        return nowLiked
+    }
+
+    fun likedIds(): List<Long> = liked.toList()
+
+    // ------------------------------------------------------------- playlists
+
+    fun playlistNames(): List<String> = playlists.keys.toList()
+
+    fun playlistIds(name: String): List<Long> = playlists[name]?.toList() ?: emptyList()
+
+    fun createPlaylist(name: String): Boolean {
+        val clean = name.trim().take(48)
+        if (clean.isBlank() || playlists.containsKey(clean)) return false
+        playlists[clean] = mutableListOf()
+        flushPlaylists()
+        _revision.value = _revision.value + 1
+        return true
+    }
+
+    fun deletePlaylist(name: String) {
+        if (playlists.remove(name) != null) {
+            flushPlaylists()
+            _revision.value = _revision.value + 1
+        }
+    }
+
+    fun addToPlaylist(name: String, id: Long) {
+        if (id <= 0) return
+        val list = playlists.getOrPut(name.trim().take(48).ifBlank { "My Playlist" }) { mutableListOf() }
+        if (!list.contains(id)) {
+            list += id
+            flushPlaylists()
+            _revision.value = _revision.value + 1
+        }
+    }
+
+    fun removeFromPlaylist(name: String, id: Long) {
+        val list = playlists[name] ?: return
+        if (list.remove(id)) {
+            flushPlaylists()
+            _revision.value = _revision.value + 1
+        }
+    }
+
+    private fun flushPlaylists() {
+        val encoded = playlists.entries.joinToString(";") { (name, ids) ->
+            "${escape(name)}|${ids.take(800).joinToString(",")}"
+        }
+        prefs.edit().putString(KEY_PLAYLISTS, encoded).apply()
+    }
+
+    private fun decodePlaylists(encoded: String) {
+        encoded.split(';').forEach { row ->
+            if (row.isBlank()) return@forEach
+            val parts = row.split('|', limit = 2)
+            val name = unescape(parts.getOrNull(0) ?: "").ifBlank { return@forEach }
+            val ids = parts.getOrNull(1)?.split(',')?.mapNotNull { it.toLongOrNull() }?.toMutableList()
+                ?: mutableListOf()
+            playlists[name] = ids
+        }
+    }
+
+    // ------------------------------------------------------------- DJ Mode analysis cache
+
+    var djMode: Boolean
+        get() = prefs.getBoolean(KEY_DJ_MODE, false)
+        set(value) = prefs.edit().putBoolean(KEY_DJ_MODE, value).apply()
+
+    fun djAnalysis(id: Long): DjTrackAnalysis? = djAnalyses[id]
+
+    fun saveDjAnalysis(analysis: DjTrackAnalysis) {
+        djAnalyses[analysis.trackId] = analysis
+        flushDjAnalyses()
+        _revision.value = _revision.value + 1
+    }
+
+    private fun flushDjAnalyses() {
+        val encoded = djAnalyses.values
+            .sortedByDescending { lastPlayed[it.trackId] ?: 0L }
+            .take(500)
+            .joinToString(";") { a ->
+                listOf(
+                    a.trackId, a.bpm, a.key, if (a.minor) 1 else 0, a.energy, a.confidence,
+                    a.beatMs, a.introCueMs, a.outroCueMs
+                ).joinToString(",")
+            }
+        prefs.edit().putString(KEY_DJ_ANALYSIS, encoded).apply()
+    }
+
+    private fun decodeDjAnalyses(encoded: String) {
+        encoded.split(';').forEach { row ->
+            if (row.isBlank()) return@forEach
+            val p = row.split(',')
+            if (p.size < 6) return@forEach
+            val id = p[0].toLongOrNull() ?: return@forEach
+            val bpm = p[1].toFloatOrNull() ?: return@forEach
+            djAnalyses[id] = DjTrackAnalysis(
+                trackId = id,
+                bpm = bpm,
+                key = p[2].toIntOrNull() ?: return@forEach,
+                minor = p[3] == "1",
+                energy = p[4].toFloatOrNull() ?: 0.4f,
+                confidence = p[5].toFloatOrNull() ?: 0f,
+                beatMs = p.getOrNull(6)?.toLongOrNull() ?: (60_000f / bpm.coerceIn(70f, 190f)).toLong(),
+                introCueMs = p.getOrNull(7)?.toLongOrNull() ?: 0L,
+                outroCueMs = p.getOrNull(8)?.toLongOrNull() ?: 0L
+            )
+        }
+    }
+
+    private fun escape(value: String): String = value
+        .replace("%", "%25")
+        .replace("|", "%7C")
+        .replace(";", "%3B")
+
+    private fun unescape(value: String): String = value
+        .replace("%3B", ";")
+        .replace("%7C", "|")
+        .replace("%25", "%")
 
     private fun flushStats() {
         // Only the 400 most recently heard tracks are worth keeping.
@@ -142,5 +286,9 @@ class PlaybackHistory(context: Context) {
         const val KEY_RESUME = "resume"
         const val KEY_QUEUE = "queue"
         const val KEY_QUEUE_INDEX = "queue_index"
+        const val KEY_LIKED = "liked"
+        const val KEY_PLAYLISTS = "playlists"
+        const val KEY_DJ_MODE = "dj_mode"
+        const val KEY_DJ_ANALYSIS = "dj_analysis"
     }
 }

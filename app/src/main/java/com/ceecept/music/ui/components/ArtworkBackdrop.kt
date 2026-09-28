@@ -40,9 +40,9 @@ data class ArtworkPalette(
     companion object {
         val Default = ArtworkPalette(
             colors = listOf(
-                Color(0xFF3C2A6E), Color(0xFF7A2E5B), Color(0xFF1F3A63), Color(0xFF2E1F4A)
+                Color(0xFF7B3CFF), Color(0xFFFF3D91), Color(0xFF1EA7FF), Color(0xFFFF8A22)
             ),
-            dominant = Color(0xFF2A2140),
+            dominant = Color(0xFF5130B8),
             isDark = true
         )
 
@@ -93,8 +93,8 @@ data class ArtworkPalette(
 
                 val avgLum = if (count > 0) luminanceSum / count else 0.3f
                 ArtworkPalette(
-                    colors = picked.map { it.deepen() },
-                    dominant = picked.first().deepen(),
+                    colors = picked.map { it.vibrant() },
+                    dominant = picked.first().vibrant(0.92f),
                     isDark = avgLum < 0.55f
                 )
             } catch (e: Exception) {
@@ -109,13 +109,14 @@ data class ArtworkPalette(
             return kotlin.math.sqrt(dr * dr + dg * dg + db * db)
         }
 
-        /** Push a colour towards a rich, slightly darker version so white text stays readable. */
-        private fun Color.deepen(): Color {
-            val f = 0.72f
+        /** Push artwork colours towards an Apple Music-style luminous, saturated wash. */
+        private fun Color.vibrant(gain: Float = 1.12f): Color {
+            val avg = (red + green + blue) / 3f
+            val sat = 1.55f
             return Color(
-                red = (red * f).coerceIn(0f, 1f),
-                green = (green * f).coerceIn(0f, 1f),
-                blue = (blue * f).coerceIn(0f, 1f),
+                red = ((avg + (red - avg) * sat) * gain + 0.035f).coerceIn(0f, 1f),
+                green = ((avg + (green - avg) * sat) * gain + 0.035f).coerceIn(0f, 1f),
+                blue = ((avg + (blue - avg) * sat) * gain + 0.035f).coerceIn(0f, 1f),
                 alpha = 1f
             )
         }
@@ -162,9 +163,9 @@ fun ArtworkBackdrop(
         drawRect(
             brush = Brush.verticalGradient(
                 listOf(
-                    colors[0].copy(alpha = 0.95f),
-                    palette.dominant.copy(alpha = 0.98f),
-                    colors.getOrElse(2) { palette.dominant }.copy(alpha = 0.95f)
+                    colors[0].copy(alpha = 1.00f),
+                    palette.dominant.copy(alpha = 1.00f),
+                    colors.getOrElse(2) { palette.dominant }.copy(alpha = 1.00f)
                 )
             ),
             size = Size(w, h)
@@ -179,8 +180,8 @@ fun ArtworkBackdrop(
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        colors[i].copy(alpha = 0.72f * intensity),
-                        colors[i].copy(alpha = 0.28f * intensity),
+                        colors[i].copy(alpha = 0.94f * intensity),
+                        colors[i].copy(alpha = 0.40f * intensity),
                         Color.Transparent
                     ),
                     center = Offset(cx, cy),
@@ -195,9 +196,9 @@ fun ArtworkBackdrop(
         drawRect(
             brush = Brush.verticalGradient(
                 listOf(
+                    Color.Black.copy(alpha = 0.04f),
                     Color.Black.copy(alpha = 0.10f),
-                    Color.Black.copy(alpha = 0.18f),
-                    Color.Black.copy(alpha = 0.55f)
+                    Color.Black.copy(alpha = 0.40f)
                 )
             ),
             size = Size(w, h)

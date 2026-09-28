@@ -5,6 +5,8 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
@@ -24,19 +26,23 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.StarBorder
-import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -88,6 +94,8 @@ fun NowPlayingScreen(
     val durationMs by connection.durationMs.collectAsStateWithLifecycle()
     val shuffleOn by connection.shuffleOn.collectAsStateWithLifecycle()
     val repeatMode by connection.repeatMode.collectAsStateWithLifecycle()
+    val djMode by connection.djMode.collectAsStateWithLifecycle()
+    val historyRevision = app.history.revision.value
 
     val title = track?.title ?: externalTitle ?: "Nothing playing"
     val subtitle = track?.let { "${it.artist} · ${it.album}" } ?: "Pick a song from your library"
@@ -100,6 +108,8 @@ fun NowPlayingScreen(
 
     val scope = rememberCoroutineScope()
     val dragOffset = remember { Animatable(0f) }
+    var showPlaylistDialog by remember { mutableStateOf(false) }
+    val liked = remember(track?.id, historyRevision) { track?.let { app.history.isLiked(it.id) } ?: false }
 
     Box(
         modifier = Modifier
@@ -233,17 +243,23 @@ fun NowPlayingScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                BouncyIconButton(onClick = { }, contentDescription = "Favourite") {
+                BouncyIconButton(
+                    onClick = { track?.let { app.history.toggleLike(it.id) } },
+                    contentDescription = if (liked) "Unlike" else "Like"
+                ) {
                     Icon(
-                        Icons.Filled.StarBorder,
+                        imageVector = if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
                         contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.88f),
+                        tint = if (liked) CeeceptColors.Accent else Color.White.copy(alpha = 0.88f),
                         modifier = Modifier.padding(8.dp).size(32.dp)
                     )
                 }
-                BouncyIconButton(onClick = { }, contentDescription = "More") {
+                BouncyIconButton(
+                    onClick = { if (track != null) showPlaylistDialog = true },
+                    contentDescription = "Add to playlist"
+                ) {
                     Icon(
-                        Icons.Filled.MoreHoriz,
+                        Icons.Filled.PlaylistAdd,
                         contentDescription = null,
                         tint = Color.White.copy(alpha = 0.88f),
                         modifier = Modifier.padding(8.dp).size(30.dp)
@@ -252,7 +268,10 @@ fun NowPlayingScreen(
             }
 
             Spacer(Modifier.height(10.dp))
-            ImmerseChip(app = app, onClick = onOpenStudio)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ImmerseChip(app = app, onClick = onOpenStudio)
+                DjModeChip(active = djMode, onClick = { connection.setDjMode(!djMode) })
+            }
             Spacer(Modifier.height(16.dp))
 
             var scrubMs by remember { mutableStateOf<Long?>(null) }
@@ -304,6 +323,15 @@ fun NowPlayingScreen(
                 RepeatButton(mode = repeatMode, onClick = { connection.cycleRepeat() })
             }
             Spacer(Modifier.height(28.dp))
+        }
+
+        val current = track
+        if (showPlaylistDialog && current != null) {
+            AddToPlaylistDialog(
+                app = app,
+                trackId = current.id,
+                onDismiss = { showPlaylistDialog = false }
+            )
         }
     }
 }
@@ -443,4 +471,97 @@ private fun ImmerseChip(app: CeeceptApp, onClick: () -> Unit) {
             color = if (active) accent else MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
+}
+
+@Composable
+private fun DjModeChip(active: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .glass(RoundedCornerShape(50), strength = 0.7f)
+            .background(if (active) CeeceptColors.Accent.copy(alpha = 0.22f) else Color.Transparent)
+            .clickable { onClick() }
+            .padding(horizontal = 14.dp, vertical = 7.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Icon(
+                imageVector = Icons.Filled.AutoAwesome,
+                contentDescription = null,
+                tint = if (active) CeeceptColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = if (active) "DJ MODE · AUTOMIX" else "DJ MODE",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (active) CeeceptColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun AddToPlaylistDialog(app: CeeceptApp, trackId: Long, onDismiss: () -> Unit) {
+    val revision = app.history.revision.value
+    val playlists = remember(revision) { app.history.playlistNames() }
+    var newName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add to playlist") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (playlists.isEmpty()) {
+                    Text(
+                        "Create your first playlist, then Ceecept will remember it offline.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    playlists.forEach { name ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .clickable {
+                                    app.history.addToPlaylist(name, trackId)
+                                    onDismiss()
+                                }
+                                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Text(name, style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it.take(48) },
+                    label = { Text("New playlist name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = {
+                        val clean = newName.trim()
+                        if (clean.isNotEmpty()) {
+                            app.history.createPlaylist(clean)
+                            app.history.addToPlaylist(clean, trackId)
+                            onDismiss()
+                        }
+                    },
+                    enabled = newName.trim().isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Create and add")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
 }

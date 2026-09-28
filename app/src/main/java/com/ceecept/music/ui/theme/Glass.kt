@@ -63,9 +63,9 @@ object Glass {
         if (dark) {
             Brush.verticalGradient(
                 listOf(
-                    Color.White.copy(alpha = 0.14f * strength),
-                    Color.White.copy(alpha = 0.07f * strength),
-                    Color.White.copy(alpha = 0.04f * strength)
+                    Color(0xFF262633).copy(alpha = 0.82f * strength),
+                    Color(0xFF171720).copy(alpha = 0.74f * strength),
+                    Color(0xFF0F0F16).copy(alpha = 0.70f * strength)
                 )
             )
         } else {
@@ -84,9 +84,9 @@ object Glass {
         brush = Brush.verticalGradient(
             if (dark) {
                 listOf(
-                    Color.White.copy(alpha = 0.30f),
-                    Color.White.copy(alpha = 0.10f),
-                    Color.White.copy(alpha = 0.05f)
+                    Color.White.copy(alpha = 0.16f),
+                    Color.White.copy(alpha = 0.07f),
+                    Color.Black.copy(alpha = 0.18f)
                 )
             } else {
                 listOf(
@@ -101,7 +101,7 @@ object Glass {
     /** Diagonal specular sheen, the detail that makes a flat fill look like glass. */
     fun sheen(dark: Boolean): Brush = Brush.linearGradient(
         colors = listOf(
-            Color.White.copy(alpha = if (dark) 0.10f else 0.5f),
+            Color.White.copy(alpha = if (dark) 0.045f else 0.5f),
             Color.Transparent,
             Color.Transparent
         )

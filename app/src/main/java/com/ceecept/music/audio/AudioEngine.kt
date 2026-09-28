@@ -35,6 +35,7 @@ class AudioEngine(
     val eq = EqualizerProcessor()
     val dynamics = DynamicsProcessor()
     val spatial = SpatializerProcessor()
+    val dj = DjTransitionProcessor()
 
     // ---- Equalizer state ----
     private val _eqGains = MutableStateFlow(FloatArray(EqualizerProcessor.BANDS))

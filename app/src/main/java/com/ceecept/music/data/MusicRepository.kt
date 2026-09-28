@@ -249,10 +249,10 @@ class MusicRepository(
             if (bmp != null) {
                 artCache.put(key, bmp)
                 synchronized(artMisses) { artMisses.remove(key) }
-            } else if (sizePx <= 512) {
-                // Do not negative-cache a failed oversized decode. Some EMUI builds fail
-                // 768/1024 px embedded-art decodes while 320/512 succeeds; callers are
-                // allowed to retry smaller sizes immediately.
+            } else if (sizePx == 512) {
+                // Do not negative-cache failed oversized decodes — or tiny song-list
+                // probes. Some EMUI builds fail one route/size while 512 succeeds later;
+                // only a full 512 px probe is authoritative enough to delay retries.
                 synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
             }
             bmp

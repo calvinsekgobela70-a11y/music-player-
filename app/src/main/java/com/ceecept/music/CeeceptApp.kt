@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.ceecept.music.audio.AudioEngine
+import com.ceecept.music.data.DjAnalyzer
 import com.ceecept.music.data.MusicRepository
 import com.ceecept.music.data.PlaybackHistory
 import com.ceecept.music.playback.PlayerConnection
@@ -59,8 +60,9 @@ class CeeceptApp : Application() {
     val engine: AudioEngine by lazy { AudioEngine(this, applicationScope) }
     val repository: MusicRepository by lazy { MusicRepository(this, applicationScope) }
     val history: PlaybackHistory by lazy { PlaybackHistory(this) }
+    val djAnalyzer: DjAnalyzer by lazy { DjAnalyzer(this) }
     val playerConnection: PlayerConnection by lazy {
-        PlayerConnection(this, repository, history, applicationScope)
+        PlayerConnection(this, repository, history, engine, djAnalyzer, applicationScope)
     }
     val uiPrefs: UiPrefs by lazy { UiPrefs(this, applicationScope) }
 }
