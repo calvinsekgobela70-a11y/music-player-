@@ -21,12 +21,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -54,8 +57,10 @@ import com.ceecept.music.CeeceptApp
 import com.ceecept.music.audio.BandParams
 import com.ceecept.music.audio.DynamicsParams
 import com.ceecept.music.audio.EqualizerProcessor
+import com.ceecept.music.audio.PowerampToneParams
 import com.ceecept.music.audio.SpaceParams
 import com.ceecept.music.audio.spatial.SpatialAudioEngine
+import com.ceecept.music.data.AutoEqPreset
 import com.ceecept.music.ui.components.SpatialRadar
 import com.ceecept.music.ui.components.StreamMeters
 import com.ceecept.music.ui.components.CeeceptTabRow
@@ -82,7 +87,7 @@ fun StudioScreen(app: CeeceptApp) {
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
         )
         CeeceptTabRow(
-            tabs = listOf("Equalizer", "Dynamics", "Space 3D"),
+            tabs = listOf("Equalizer", "Poweramp", "Dynamics", "Space 3D"),
             selected = tab,
             onSelect = { tab = it },
             modifier = Modifier
@@ -100,7 +105,8 @@ fun StudioScreen(app: CeeceptApp) {
         ) { t ->
             when (t) {
                 0 -> EqualizerTab(app)
-                1 -> DynamicsTab(app)
+                1 -> PowerampToneTab(app)
+                2 -> DynamicsTab(app)
                 else -> SpaceTab(app)
             }
         }
@@ -121,6 +127,16 @@ private fun EqualizerTab(app: CeeceptApp) {
     val musicalQ by engine.eqMusicalQ.collectAsStateWithLifecycle()
     val autoGain by engine.eqAutoGain.collectAsStateWithLifecycle()
     val subsonic by engine.eqSubsonic.collectAsStateWithLifecycle()
+    var autoEqQuery by rememberSaveable { mutableStateOf("") }
+    var autoEqResults by remember { mutableStateOf<List<AutoEqPreset>>(emptyList()) }
+    LaunchedEffect(autoEqQuery) {
+        if (autoEqQuery.trim().length >= 2) {
+            delay(350)
+            autoEqResults = app.autoEqRepository.search(autoEqQuery)
+        } else {
+            autoEqResults = emptyList()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -173,6 +189,45 @@ private fun EqualizerTab(app: CeeceptApp) {
             onSelect = { engine.applyEqPreset(it) },
             modifier = Modifier.fillMaxWidth()
         )
+        SectionHeader("Uploaded app AutoEQ")
+        TextField(
+            value = autoEqQuery,
+            onValueChange = { autoEqQuery = it.take(48) },
+            placeholder = { Text("Search headphone model, e.g. Salnotes") },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp),
+            colors = TextFieldDefaults.colors(
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        )
+        autoEqResults.take(5).forEach { result ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(result.name, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+                    Text(
+                        result.meta,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
+                Button(onClick = { engine.applyAutoEqPreset(result.name, result.gains) }) {
+                    Text("Apply")
+                }
+            }
+        }
         SectionHeader("Bands")
         gains.forEachIndexed { i, g ->
             StudioSlider(
@@ -260,6 +315,104 @@ private fun EqGraph(gains: FloatArray, musicalQ: Boolean = true) {
             )
         )
         drawPath(path = path, color = accent, style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Uploaded-app / Poweramp-inspired tone
+// ---------------------------------------------------------------------------
+
+@Composable
+private fun PowerampToneTab(app: CeeceptApp) {
+    val engine = app.engine
+    val params by engine.powerampParams.collectAsStateWithLifecycle()
+    val preset by engine.powerampPreset.collectAsStateWithLifecycle()
+
+    fun update(next: PowerampToneParams) = engine.updatePowerampTone(next)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        SwitchRow(
+            title = "Uploaded-app DSP core",
+            subtitle = "Poweramp-style DVC headroom, bass/treble tone, stereo width and room send",
+            checked = params.enabled,
+            onChange = { update(params.copy(enabled = it)) }
+        )
+        SectionHeader("Presets")
+        PresetChips(
+            options = PowerampToneParams.PRESETS.keys.toList(),
+            selected = preset,
+            onSelect = { engine.applyPowerampPreset(it) },
+            modifier = Modifier.fillMaxWidth()
+        )
+        SectionHeader("DVC / tone")
+        StudioSlider(
+            label = "DVC headroom",
+            value = params.dvcHeadroomDb,
+            valueRange = -9f..0f,
+            display = String.format(Locale.US, "%+.1f dB", params.dvcHeadroomDb),
+            onChange = { update(params.copy(dvcHeadroomDb = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Bass shelf",
+            value = params.bassDb,
+            valueRange = -9f..9f,
+            display = String.format(Locale.US, "%+.1f dB", params.bassDb),
+            onChange = { update(params.copy(bassDb = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Treble shelf",
+            value = params.trebleDb,
+            valueRange = -9f..9f,
+            display = String.format(Locale.US, "%+.1f dB", params.trebleDb),
+            onChange = { update(params.copy(trebleDb = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        SectionHeader("Stereo / room")
+        StudioSlider(
+            label = "Stereo width",
+            value = params.stereoWidth,
+            valueRange = -0.25f..0.60f,
+            display = String.format(Locale.US, "%.0f%%", params.stereoWidth * 100f),
+            onChange = { update(params.copy(stereoWidth = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Crossfeed glue",
+            value = params.crossfeed,
+            valueRange = 0f..0.22f,
+            display = String.format(Locale.US, "%.0f%%", params.crossfeed * 100f),
+            onChange = { update(params.copy(crossfeed = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Room send",
+            value = params.reverbMix,
+            valueRange = 0f..0.20f,
+            display = String.format(Locale.US, "%.0f%%", params.reverbMix * 100f),
+            onChange = { update(params.copy(reverbMix = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        StudioSlider(
+            label = "Warm drive",
+            value = params.warmDrive,
+            valueRange = 0f..0.35f,
+            display = String.format(Locale.US, "%.0f%%", params.warmDrive * 100f),
+            onChange = { update(params.copy(warmDrive = it)) },
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        Text(
+            text = "Imported from the uploaded app's exposed DSP design: DVC/headroom, bass/tone, stereo and reverb-style controls rebuilt inside Ceecept's Media3 float chain.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp)
+        )
+        Spacer(Modifier.height(24.dp))
     }
 }
 

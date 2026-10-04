@@ -47,6 +47,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
@@ -280,6 +281,20 @@ private fun LibraryRoot(
     val playlistNames = remember(query, historyRevision) {
         app.history.playlistNames().filter { it.contains(query, ignoreCase = true) }
     }
+    val folders = remember(tracks, query) {
+        tracks
+            .filter { it.filePath.isNotBlank() }
+            .groupBy { folderPathOf(it) }
+            .map { (path, folderTracks) ->
+                FolderEntry(
+                    path = path,
+                    name = path.substringAfterLast('/').ifBlank { "Music" },
+                    tracks = app.repository.sorted(folderTracks, TrackSort.TITLE, true, app.history)
+                )
+            }
+            .filter { it.name.contains(query, ignoreCase = true) || it.tracks.any { track -> track.matches(query) } }
+            .sortedWith(compareByDescending<FolderEntry> { it.tracks.size }.thenBy { it.name.lowercase() })
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
@@ -290,7 +305,7 @@ private fun LibraryRoot(
         TextField(
             value = query,
             onValueChange = { query = it },
-            placeholder = { Text("Search songs, artists, albums") },
+            placeholder = { Text("Search songs, artists, albums, folders") },
             leadingIcon = {
                 Icon(
                     Icons.Filled.Search,
@@ -314,7 +329,7 @@ private fun LibraryRoot(
         ContinueListening(app = app)
         Spacer(Modifier.height(10.dp))
         CeeceptTabRow(
-            tabs = listOf("Songs", "Liked", "Lists", "Artists", "Albums"),
+            tabs = listOf("Songs", "Liked", "Lists", "Artists", "Albums", "Folders"),
             selected = tab,
             onSelect = { tab = it },
             modifier = Modifier
@@ -372,13 +387,19 @@ private fun LibraryRoot(
                             },
                             onArtist = onArtist
                         )
-                        else -> AlbumGrid(
+                        4 -> AlbumGrid(
                             albums = app.repository.albums().filter {
                                 it.title.contains(query, ignoreCase = true) ||
                                     it.artist.contains(query, ignoreCase = true)
                             },
                             app = app,
                             onAlbum = onAlbum
+                        )
+                        else -> FolderList(
+                            folders = folders,
+                            onFolder = { folder ->
+                                if (folder.tracks.isNotEmpty()) app.playerConnection.playQueue(folder.tracks, 0)
+                            }
                         )
                     }
                 }
@@ -859,6 +880,68 @@ private fun PlaylistDetail(app: CeeceptApp, name: String, onBack: () -> Unit) {
             app = app,
             onRemove = { app.history.removeFromPlaylist(name, it.id) }
         )
+    }
+}
+
+private data class FolderEntry(
+    val path: String,
+    val name: String,
+    val tracks: List<Track>
+)
+
+private fun folderPathOf(track: Track): String = track.filePath.substringBeforeLast('/', missingDelimiterValue = "")
+
+@Composable
+private fun FolderList(folders: List<FolderEntry>, onFolder: (FolderEntry) -> Unit) {
+    LazyColumn(
+        contentPadding = PaddingValues(bottom = 24.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        items(folders, key = { it.path }) { folder ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onFolder(folder) }
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(CeeceptColors.accentGradient()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Folder,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = folder.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "${folder.tracks.size} songs · ${folder.path}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
     }
 }
 

@@ -116,9 +116,10 @@ fun CeeceptRoot(app: CeeceptApp, useCustomFont: Boolean = true) {
 
     CeeceptTheme(mode = themeMode, useCustomFont = useCustomFont) {
         val view = LocalView.current
-        val barColor = MaterialTheme.colorScheme.background
+        val barColor = Color.Transparent
         SideEffect {
             val window = (view.context as? Activity)?.window ?: return@SideEffect
+            WindowCompat.setDecorFitsSystemWindows(window, false)
             window.statusBarColor = barColor.toArgb()
             window.navigationBarColor = barColor.toArgb()
             WindowCompat.getInsetsController(window, view).apply {

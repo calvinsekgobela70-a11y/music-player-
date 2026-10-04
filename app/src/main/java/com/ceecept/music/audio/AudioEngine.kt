@@ -32,10 +32,18 @@ class AudioEngine(
     private val context: Context,
     private val appScope: CoroutineScope
 ) {
+    val poweramp = PowerampDspProcessor()
     val eq = EqualizerProcessor()
     val dynamics = DynamicsProcessor()
     val spatial = SpatializerProcessor()
     val dj = DjTransitionProcessor()
+
+    // ---- Uploaded-app / Poweramp-inspired tone state ----
+    private val _powerampParams = MutableStateFlow(PowerampToneParams.DEFAULT)
+    val powerampParams: StateFlow<PowerampToneParams> = _powerampParams.asStateFlow()
+
+    private val _powerampPreset = MutableStateFlow("Poweramp Balanced")
+    val powerampPreset: StateFlow<String> = _powerampPreset.asStateFlow()
 
     // ---- Equalizer state ----
     private val _eqGains = MutableStateFlow(FloatArray(EqualizerProcessor.BANDS))
@@ -120,6 +128,29 @@ class AudioEngine(
         spatial.strategy.set(strategy)
     }
 
+    // ---------- Uploaded-app / Poweramp-inspired tone ----------
+
+    fun updatePowerampTone(params: PowerampToneParams, presetName: String = "Custom") {
+        val clean = params.copy(
+            dvcHeadroomDb = params.dvcHeadroomDb.coerceIn(-9f, 0f),
+            bassDb = params.bassDb.coerceIn(-9f, 9f),
+            trebleDb = params.trebleDb.coerceIn(-9f, 9f),
+            stereoWidth = params.stereoWidth.coerceIn(-0.25f, 0.60f),
+            crossfeed = params.crossfeed.coerceIn(0f, 0.22f),
+            reverbMix = params.reverbMix.coerceIn(0f, 0.20f),
+            warmDrive = params.warmDrive.coerceIn(0f, 0.35f)
+        )
+        _powerampParams.value = clean
+        _powerampPreset.value = presetName
+        poweramp.params.set(clean)
+        scheduleSave()
+    }
+
+    fun applyPowerampPreset(name: String) {
+        val preset = PowerampToneParams.PRESETS[name] ?: return
+        updatePowerampTone(preset, name)
+    }
+
     // ---------- Equalizer ----------
 
     fun setEqBand(index: Int, gainDb: Float) {
@@ -172,6 +203,16 @@ class AudioEngine(
         scheduleSave()
     }
 
+    fun applyAutoEqPreset(name: String, gains: FloatArray) {
+        if (gains.size != EqualizerProcessor.BANDS) return
+        val clean = gains.copyOf()
+        for (i in clean.indices) clean[i] = clean[i].coerceIn(-EqualizerProcessor.MAX_GAIN_DB, EqualizerProcessor.MAX_GAIN_DB)
+        _eqGains.value = clean
+        _eqPreset.value = "AutoEQ: ${name.take(28)}"
+        eq.setAll(clean, _eqPreamp.value)
+        scheduleSave()
+    }
+
     // ---------- Dynamics ----------
 
     fun updateDynamics(params: DynamicsParams, presetName: String = "Custom") {
@@ -214,6 +255,11 @@ class AudioEngine(
 
     private suspend fun save() {
         val eqCsv = _eqGains.value.joinToString(",")
+        val tone = _powerampParams.value
+        val toneCsv = listOf(
+            if (tone.enabled) 1f else 0f, tone.dvcHeadroomDb, tone.bassDb, tone.trebleDb,
+            tone.stereoWidth, tone.crossfeed, tone.reverbMix, tone.warmDrive
+        ).joinToString(",")
         val d = _dynamicsParams.value
         val s = _spaceParams.value
         val dynList = mutableListOf<Float>()
@@ -228,6 +274,8 @@ class AudioEngine(
         dynList.add(d.limiterReleaseMs)
         dynList.add(d.outputDb)
         context.ceeceptDataStore.edit { p ->
+            p[Keys.POWERAMP_TONE] = toneCsv
+            p[Keys.POWERAMP_PRESET] = _powerampPreset.value
             p[Keys.EQ_GAINS] = eqCsv
             p[Keys.EQ_PREAMP] = _eqPreamp.value
             p[Keys.EQ_ENABLED] = _eqEnabled.value
@@ -256,6 +304,23 @@ class AudioEngine(
 
     private suspend fun restore() {
         val p = context.ceeceptDataStore.data.first()
+        // Uploaded-app / Poweramp-inspired tone
+        p[Keys.POWERAMP_TONE]?.split(",")?.mapNotNull { it.toFloatOrNull() }?.let { list ->
+            if (list.size >= 8) {
+                _powerampParams.value = PowerampToneParams(
+                    enabled = list[0] > 0.5f,
+                    dvcHeadroomDb = list[1],
+                    bassDb = list[2],
+                    trebleDb = list[3],
+                    stereoWidth = list[4],
+                    crossfeed = list[5],
+                    reverbMix = list[6],
+                    warmDrive = list[7]
+                )
+            }
+        }
+        _powerampPreset.value = p[Keys.POWERAMP_PRESET] ?: "Poweramp Balanced"
+        poweramp.params.set(_powerampParams.value)
         // EQ
         p[Keys.EQ_GAINS]?.split(",")?.mapNotNull { it.toFloatOrNull() }?.let { list ->
             if (list.size == EqualizerProcessor.BANDS) {
@@ -333,6 +398,8 @@ class AudioEngine(
     }
 
     private object Keys {
+        val POWERAMP_TONE = stringPreferencesKey("poweramp_tone")
+        val POWERAMP_PRESET = stringPreferencesKey("poweramp_preset")
         val EQ_GAINS = stringPreferencesKey("eq_gains")
         val EQ_PREAMP = floatPreferencesKey("eq_preamp")
         val EQ_ENABLED = booleanPreferencesKey("eq_enabled")

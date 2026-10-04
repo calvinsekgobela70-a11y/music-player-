@@ -110,9 +110,9 @@ data class ArtworkPalette(
         }
 
         /** Push artwork colours towards an Apple Music-style luminous, saturated wash. */
-        private fun Color.vibrant(gain: Float = 1.12f): Color {
+        private fun Color.vibrant(gain: Float = 1.20f): Color {
             val avg = (red + green + blue) / 3f
-            val sat = 1.55f
+            val sat = 1.72f
             return Color(
                 red = ((avg + (red - avg) * sat) * gain + 0.035f).coerceIn(0f, 1f),
                 green = ((avg + (green - avg) * sat) * gain + 0.035f).coerceIn(0f, 1f),
@@ -143,7 +143,7 @@ fun ArtworkBackdrop(
         initialValue = 0f,
         targetValue = if (animated) 1f else 0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 38_000, easing = LinearEasing),
+            animation = tween(durationMillis = 22_000, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "phase"
@@ -171,7 +171,7 @@ fun ArtworkBackdrop(
             size = Size(w, h)
         )
 
-        val rates = floatArrayOf(1f, 0.77f, 1.31f, 0.53f)
+        val rates = floatArrayOf(1.18f, 0.94f, 1.57f, 0.68f)
         val phases = floatArrayOf(0f, 1.7f, 3.1f, 4.6f)
         for (i in 0 until 4) {
             val cx = w * (0.5f + 0.42f * sin(t * rates[i] + phases[i]))
@@ -180,8 +180,32 @@ fun ArtworkBackdrop(
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(
-                        colors[i].copy(alpha = 0.94f * intensity),
-                        colors[i].copy(alpha = 0.40f * intensity),
+                        colors[i].copy(alpha = 1.00f * intensity),
+                        colors[i].copy(alpha = 0.54f * intensity),
+                        Color.Transparent
+                    ),
+                    center = Offset(cx, cy),
+                    radius = radius
+                ),
+                radius = radius,
+                center = Offset(cx, cy)
+            )
+        }
+
+        // MilkDrop-inspired sparkle pulses from the uploaded app reference: cheap radial
+        // glows only, so Huawei P40 Lite stays smooth while the screen feels livelier.
+        for (i in 0 until 5) {
+            val local = t * (1.65f + i * 0.21f) + phases[i % phases.size]
+            val cx = w * (0.5f + 0.48f * sin(local * 0.73f + i))
+            val cy = h * (0.5f + 0.46f * cos(local * 0.91f + i * 1.7f))
+            val pulse = 0.5f + 0.5f * sin(local * 1.9f)
+            val radius = max(w, h) * (0.16f + 0.08f * pulse)
+            val color = colors[(i + 1) % colors.size]
+            drawCircle(
+                brush = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.12f * pulse * intensity),
+                        color.copy(alpha = 0.24f * pulse * intensity),
                         Color.Transparent
                     ),
                     center = Offset(cx, cy),
