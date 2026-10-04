@@ -4,6 +4,13 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.State
 
+data class TrackBookmark(
+    val trackId: Long,
+    val positionMs: Long,
+    val label: String,
+    val createdAtMs: Long = System.currentTimeMillis()
+)
+
 /**
  * The app's memory.
  *
@@ -23,6 +30,8 @@ class PlaybackHistory(context: Context) {
     private val plays = HashMap<Long, Int>()
     private val lastPlayed = HashMap<Long, Long>()
     private val liked = HashSet<Long>()
+    private val ratings = HashMap<Long, Int>()
+    private val bookmarks = LinkedHashMap<Long, MutableList<TrackBookmark>>()
     private val playlists = LinkedHashMap<String, MutableList<Long>>()
     private val djAnalyses = HashMap<Long, DjTrackAnalysis>()
 
@@ -44,6 +53,8 @@ class PlaybackHistory(context: Context) {
         prefs.getString(KEY_LIKED, "")?.split(',')
             ?.mapNotNull { it.toLongOrNull() }
             ?.forEach { liked += it }
+        decodeRatings(prefs.getString(KEY_RATINGS, "") ?: "")
+        decodeBookmarks(prefs.getString(KEY_BOOKMARKS, "") ?: "")
         decodePlaylists(prefs.getString(KEY_PLAYLISTS, "") ?: "")
         decodeDjAnalyses(prefs.getString(KEY_DJ_ANALYSIS, "") ?: "")
     }
@@ -91,6 +102,86 @@ class PlaybackHistory(context: Context) {
     }
 
     fun likedIds(): List<Long> = liked.toList()
+
+    // ------------------------------------------------------------- ratings / bookmarks
+
+    fun rating(id: Long): Int = ratings[id] ?: 0
+
+    fun setRating(id: Long, value: Int) {
+        if (id <= 0) return
+        val clean = value.coerceIn(0, 5)
+        if (clean == 0) ratings.remove(id) else ratings[id] = clean
+        flushRatings()
+        _revision.value = _revision.value + 1
+    }
+
+    fun bookmarksFor(id: Long): List<TrackBookmark> =
+        bookmarks[id]?.sortedBy { it.positionMs }?.toList() ?: emptyList()
+
+    fun addBookmark(trackId: Long, positionMs: Long, label: String = "") {
+        if (trackId <= 0) return
+        val list = bookmarks.getOrPut(trackId) { mutableListOf() }
+        val cleanLabel = label.trim().take(48).ifBlank { formatBookmark(positionMs) }
+        if (list.none { kotlin.math.abs(it.positionMs - positionMs) < 1500L }) {
+            list += TrackBookmark(trackId, positionMs.coerceAtLeast(0), cleanLabel)
+            flushBookmarks()
+            _revision.value = _revision.value + 1
+        }
+    }
+
+    fun removeBookmark(trackId: Long, positionMs: Long) {
+        val list = bookmarks[trackId] ?: return
+        if (list.removeAll { kotlin.math.abs(it.positionMs - positionMs) < 750L }) {
+            if (list.isEmpty()) bookmarks.remove(trackId)
+            flushBookmarks()
+            _revision.value = _revision.value + 1
+        }
+    }
+
+    private fun flushRatings() {
+        val encoded = ratings.entries
+            .filter { it.value > 0 }
+            .joinToString(";") { "${it.key}:${it.value.coerceIn(1, 5)}" }
+        prefs.edit().putString(KEY_RATINGS, encoded).apply()
+    }
+
+    private fun decodeRatings(encoded: String) {
+        encoded.split(';').forEach { row ->
+            val parts = row.split(':')
+            val id = parts.getOrNull(0)?.toLongOrNull() ?: return@forEach
+            val value = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 5) ?: return@forEach
+            if (value > 0) ratings[id] = value
+        }
+    }
+
+    private fun flushBookmarks() {
+        val encoded = bookmarks.values.flatten()
+            .sortedByDescending { it.createdAtMs }
+            .take(800)
+            .joinToString(";") { b ->
+                listOf(b.trackId, b.positionMs, b.createdAtMs, escape(b.label)).joinToString(":")
+            }
+        prefs.edit().putString(KEY_BOOKMARKS, encoded).apply()
+    }
+
+    private fun decodeBookmarks(encoded: String) {
+        encoded.split(';').forEach { row ->
+            if (row.isBlank()) return@forEach
+            val parts = row.split(':', limit = 4)
+            val id = parts.getOrNull(0)?.toLongOrNull() ?: return@forEach
+            val pos = parts.getOrNull(1)?.toLongOrNull() ?: return@forEach
+            val created = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+            val label = unescape(parts.getOrNull(3) ?: "").ifBlank { formatBookmark(pos) }
+            bookmarks.getOrPut(id) { mutableListOf() } += TrackBookmark(id, pos, label, created)
+        }
+    }
+
+    private fun formatBookmark(ms: Long): String {
+        val total = (ms / 1000).coerceAtLeast(0)
+        val min = total / 60
+        val sec = total % 60
+        return "%d:%02d".format(min, sec)
+    }
 
     // ------------------------------------------------------------- playlists
 
@@ -273,6 +364,18 @@ class PlaybackHistory(context: Context) {
         get() = prefs.getBoolean(KEY_RESUME, true)
         set(value) = prefs.edit().putBoolean(KEY_RESUME, value).apply()
 
+    var keepNotification: Boolean
+        get() = prefs.getBoolean(KEY_KEEP_NOTIFICATION, true)
+        set(value) = prefs.edit().putBoolean(KEY_KEEP_NOTIFICATION, value).apply()
+
+    var resumeOnHeadset: Boolean
+        get() = prefs.getBoolean(KEY_RESUME_HEADSET, false)
+        set(value) = prefs.edit().putBoolean(KEY_RESUME_HEADSET, value).apply()
+
+    var gaplessPreload: Boolean
+        get() = prefs.getBoolean(KEY_GAPLESS_PRELOAD, true)
+        set(value) = prefs.edit().putBoolean(KEY_GAPLESS_PRELOAD, value).apply()
+
     /** Track ids of the queue that was playing, in order. */
     var queueIds: List<Long>
         get() = prefs.getString(KEY_QUEUE, "")?.split(',')
@@ -309,7 +412,12 @@ class PlaybackHistory(context: Context) {
         const val KEY_QUEUE = "queue"
         const val KEY_QUEUE_INDEX = "queue_index"
         const val KEY_LIKED = "liked"
+        const val KEY_RATINGS = "ratings"
+        const val KEY_BOOKMARKS = "bookmarks"
         const val KEY_PLAYLISTS = "playlists"
+        const val KEY_KEEP_NOTIFICATION = "keep_notification"
+        const val KEY_RESUME_HEADSET = "resume_headset"
+        const val KEY_GAPLESS_PRELOAD = "gapless_preload"
         const val KEY_DJ_MODE = "dj_mode"
         const val KEY_DJ_ANALYSIS = "dj_analysis"
     }

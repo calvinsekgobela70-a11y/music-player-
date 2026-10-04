@@ -17,16 +17,22 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SettingsBrightness
+import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Update
 import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -102,12 +108,35 @@ fun SettingsScreen(app: CeeceptApp) {
         SectionHeader("Signal path")
         SignalPathCard(app)
 
+        SectionHeader("Playback")
+        PlaybackFeatureCard(app)
+
+        SectionHeader("Visualizer")
+        ActionRow(
+            icon = Icons.Filled.AutoAwesome,
+            title = "MilkDrop preset library",
+            subtitle = "${app.visualizerRepository.presets.size} uploaded-app presets imported for the adaptive background visualizer",
+            onClick = { }
+        )
+
+        SectionHeader("Library scanner")
+        ActionRow(
+            icon = Icons.Filled.Update,
+            title = "Full rescan",
+            subtitle = "Refresh songs, folders, albums, genres, composers, years, artwork and local lyrics cache",
+            onClick = {
+                app.lyricsRepository.clear()
+                app.repository.refresh()
+            }
+        )
+
         SectionHeader("Studio")
         ActionRow(
             icon = Icons.Filled.RestartAlt,
             title = "Reset Studio",
             subtitle = "Restore default EQ, dynamics and 3D settings",
             onClick = {
+                app.engine.applyPowerampPreset("Poweramp Balanced")
                 app.engine.applyEqPreset("Flat")
                 app.engine.applyDynamicsPreset("Transparent")
                 app.engine.applySpacePreset("Wide Stage")
@@ -159,6 +188,132 @@ fun SettingsScreen(app: CeeceptApp) {
             }
         }
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun PlaybackFeatureCard(app: CeeceptApp) {
+    var keepNotification by remember { mutableStateOf(app.history.keepNotification) }
+    var resumeHeadset by remember { mutableStateOf(app.history.resumeOnHeadset) }
+    var gapless by remember { mutableStateOf(app.history.gaplessPreload) }
+    val sleepEnd by app.playerConnection.sleepTimerEndMs.collectAsStateWithLifecycle()
+    val remaining = remember(sleepEnd) {
+        val left = sleepEnd - System.currentTimeMillis()
+        if (left > 0) "Active · ${((left + 59_999L) / 60_000L).coerceAtLeast(1L)} min left" else "Off"
+    }
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            ToggleRow(
+                icon = Icons.Filled.Notifications,
+                title = "Keep notification",
+                subtitle = "Helps EMUI/Huawei keep background playback alive while paused or screen-off",
+                checked = keepNotification,
+                onChange = {
+                    keepNotification = it
+                    app.history.keepNotification = it
+                }
+            )
+            ToggleRow(
+                icon = Icons.Filled.Headphones,
+                title = "Resume on headset",
+                subtitle = "Remember the uploaded app's headset behavior: reconnect/play button can resume the saved session",
+                checked = resumeHeadset,
+                onChange = {
+                    resumeHeadset = it
+                    app.history.resumeOnHeadset = it
+                }
+            )
+            ToggleRow(
+                icon = Icons.Filled.Info,
+                title = "Preload gapless tracks",
+                subtitle = "Keep ExoPlayer ready for smoother album/queue transitions",
+                checked = gapless,
+                onChange = {
+                    gapless = it
+                    app.history.gaplessPreload = it
+                }
+            )
+            ActionRowInline(
+                icon = Icons.Filled.Timer,
+                title = "Sleep timer",
+                subtitle = remaining,
+                actions = listOf(
+                    "15" to { app.playerConnection.setSleepTimer(15) },
+                    "30" to { app.playerConnection.setSleepTimer(30) },
+                    "60" to { app.playerConnection.setSleepTimer(60) },
+                    "Off" to { app.playerConnection.clearSleepTimer() }
+                )
+            )
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { onChange(!checked) }
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        Column(modifier = Modifier.weight(1f).padding(start = 12.dp, end = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun ActionRowInline(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    actions: List<Pair<String, () -> Unit>>
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(modifier = Modifier.weight(1f).padding(start = 12.dp)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            actions.forEach { (label, action) ->
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                        .clickable { action() }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
     }
 }
 
@@ -234,7 +389,7 @@ private fun SignalPathCard(app: CeeceptApp) {
                 if (sampleRate > 0) "$sampleRate Hz · $channels ch" else "Play something to inspect"
             )
             SignalLine("Precision", "32-bit float end-to-end")
-            SignalLine("Chain", "EQ 16 → Dynamics → Limiter → Immerse 3D")
+            SignalLine("Chain", "EQ/AutoEQ → Tone/DVC → Dynamics → Immerse 3D → DJ")
         }
     }
 }

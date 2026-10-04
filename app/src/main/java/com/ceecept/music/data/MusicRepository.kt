@@ -69,13 +69,40 @@ class MusicRepository(
             AlbumEntry(
                 albumId = albumId,
                 title = first.album,
-                artist = first.artist,
+                artist = first.albumArtist.ifBlank { first.artist },
                 year = list.maxOf { it.year },
                 trackCount = list.size,
                 sample = first
             )
         }.sortedBy { it.title.lowercase() }
     }
+
+    fun genres(): List<GenreEntry> = _tracks.value
+        .filter { it.genre.isNotBlank() }
+        .groupBy { it.genre }
+        .map { (name, list) -> GenreEntry(name, list.size, list.first()) }
+        .sortedBy { it.name.lowercase() }
+
+    fun composers(): List<ComposerEntry> = _tracks.value
+        .filter { it.composer.isNotBlank() }
+        .groupBy { it.composer }
+        .map { (name, list) -> ComposerEntry(name, list.size, list.first()) }
+        .sortedBy { it.name.lowercase() }
+
+    fun years(): List<YearEntry> = _tracks.value
+        .filter { it.year > 0 }
+        .groupBy { it.year }
+        .map { (year, list) -> YearEntry(year, list.size, list.first()) }
+        .sortedByDescending { it.year }
+
+    fun tracksByGenre(name: String): List<Track> =
+        _tracks.value.filter { it.genre == name }.sortedWith(compareBy({ it.artist }, { it.album }, { it.trackNumber }))
+
+    fun tracksByComposer(name: String): List<Track> =
+        _tracks.value.filter { it.composer == name }.sortedWith(compareBy({ it.artist }, { it.album }, { it.trackNumber }))
+
+    fun tracksByYear(year: Int): List<Track> =
+        _tracks.value.filter { it.year == year }.sortedWith(compareBy({ it.artist }, { it.album }, { it.trackNumber }))
 
     fun tracksByArtist(name: String): List<Track> =
         _tracks.value.filter { it.artist == name }.sortedWith(
@@ -119,7 +146,7 @@ class MusicRepository(
             _isLoading.value = true
             try {
                 loadAlbumArtPaths()
-                val list = queryTracks()
+                val list = queryTracks(includeRichTags = true).ifEmpty { queryTracks(includeRichTags = false) }
                 synchronized(byId) {
                     byId.clear()
                     list.forEach { byId[it.id] = it }
@@ -132,10 +159,10 @@ class MusicRepository(
         }
     }
 
-    private fun queryTracks(): List<Track> {
+    private fun queryTracks(includeRichTags: Boolean): List<Track> {
         val result = mutableListOf<Track>()
         val uri = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(
+        val baseProjection = listOf(
             MediaStore.Audio.Media._ID,
             MediaStore.Audio.Media.TITLE,
             MediaStore.Audio.Media.ARTIST,
@@ -148,9 +175,12 @@ class MusicRepository(
             MediaStore.Audio.Media.DATA,
             MediaStore.Audio.Media.DATE_ADDED
         )
+        val richProjection = if (includeRichTags) listOf("genre", "composer", "album_artist") else emptyList()
+        val projection = (baseProjection + richProjection).toTypedArray()
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
         val sortOrder = "${MediaStore.Audio.Media.TITLE} ASC"
-        context.contentResolver.query(uri, projection, selection, null, sortOrder)?.use { cursor ->
+        try {
+            context.contentResolver.query(uri, projection, selection, null, sortOrder)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
             val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
             val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
@@ -162,6 +192,9 @@ class MusicRepository(
             val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
             val dataCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
             val addedCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
+            val genreCol = cursor.getColumnIndex("genre")
+            val composerCol = cursor.getColumnIndex("composer")
+            val albumArtistCol = cursor.getColumnIndex("album_artist")
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val duration = cursor.getLong(durationCol)
@@ -181,10 +214,16 @@ class MusicRepository(
                         year = cursor.getInt(yearCol),
                         mimeType = cursor.getString(mimeCol) ?: "",
                         filePath = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else "",
-                        dateAddedSec = if (addedCol >= 0) cursor.getLong(addedCol) else 0L
+                        dateAddedSec = if (addedCol >= 0) cursor.getLong(addedCol) else 0L,
+                        genre = if (genreCol >= 0) cursor.getString(genreCol)?.normalizeUnknown().orEmpty() else "",
+                        composer = if (composerCol >= 0) cursor.getString(composerCol)?.normalizeUnknown().orEmpty() else "",
+                        albumArtist = if (albumArtistCol >= 0) cursor.getString(albumArtistCol)?.normalizeUnknown().orEmpty() else ""
                     )
                 )
             }
+            }
+        } catch (e: Exception) {
+            if (!includeRichTags) com.ceecept.music.CrashReporter.recordSoft(context, "MusicRepository.queryTracks", e)
         }
         return result
     }
@@ -220,6 +259,9 @@ class MusicRepository(
 
     private fun String.normalizeArtist(): String =
         if (equals("<unknown>", ignoreCase = true)) "Unknown Artist" else this
+
+    private fun String.normalizeUnknown(): String =
+        trim().takeUnless { it.isBlank() || it.equals("<unknown>", ignoreCase = true) } ?: ""
 
     /**
      * Album artwork, memory-cached.

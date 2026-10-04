@@ -27,6 +27,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
@@ -35,6 +37,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -62,6 +66,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ceecept.music.CeeceptApp
+import com.ceecept.music.data.LyricsResult
+import com.ceecept.music.data.TrackBookmark
 import com.ceecept.music.ui.components.ArtworkBackdrop
 import com.ceecept.music.ui.components.ArtworkPalette
 import com.ceecept.music.ui.components.ArtworkView
@@ -109,7 +115,13 @@ fun NowPlayingScreen(
     val scope = rememberCoroutineScope()
     val dragOffset = remember { Animatable(0f) }
     var showPlaylistDialog by remember { mutableStateOf(false) }
+    var lyrics by remember(track?.id) { mutableStateOf<LyricsResult?>(null) }
     val liked = remember(track?.id, historyRevision) { track?.let { app.history.isLiked(it.id) } ?: false }
+    val rating = remember(track?.id, historyRevision) { track?.let { app.history.rating(it.id) } ?: 0 }
+    val bookmarks = remember(track?.id, historyRevision) { track?.let { app.history.bookmarksFor(it.id) } ?: emptyList() }
+    LaunchedEffect(track?.id) {
+        lyrics = track?.let { app.lyricsRepository.lyricsFor(it) }
+    }
 
     Box(
         modifier = Modifier
@@ -146,6 +158,7 @@ fun NowPlayingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -272,6 +285,34 @@ fun NowPlayingScreen(
                 ImmerseChip(app = app, onClick = onOpenStudio)
                 DjModeChip(active = djMode, onClick = { connection.setDjMode(!djMode) })
             }
+            app.visualizerRepository.presetFor(track?.id ?: 0L, positionMs)?.let { preset ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "MilkDrop visualizer · $preset",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.70f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glass(RoundedCornerShape(16.dp), strength = 0.45f)
+                        .padding(horizontal = 12.dp, vertical = 7.dp)
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            TrackMemoryRow(
+                rating = rating,
+                bookmarks = bookmarks,
+                positionMs = positionMs,
+                onRate = { value -> track?.let { app.history.setRating(it.id, value) } },
+                onBookmark = { track?.let { app.history.addBookmark(it.id, positionMs) } },
+                onSeekBookmark = { connection.seekTo(it.positionMs) },
+                onDeleteBookmark = { bookmark -> track?.let { app.history.removeBookmark(it.id, bookmark.positionMs) } }
+            )
+            lyrics?.let { result ->
+                Spacer(Modifier.height(10.dp))
+                LyricsCard(result = result, positionMs = positionMs)
+            }
             Spacer(Modifier.height(16.dp))
 
             var scrubMs by remember { mutableStateOf<Long?>(null) }
@@ -331,6 +372,109 @@ fun NowPlayingScreen(
                 app = app,
                 trackId = current.id,
                 onDismiss = { showPlaylistDialog = false }
+            )
+        }
+    }
+}
+
+@Composable
+private fun TrackMemoryRow(
+    rating: Int,
+    bookmarks: List<TrackBookmark>,
+    positionMs: Long,
+    onRate: (Int) -> Unit,
+    onBookmark: () -> Unit,
+    onSeekBookmark: (TrackBookmark) -> Unit,
+    onDeleteBookmark: (TrackBookmark) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glass(RoundedCornerShape(18.dp), strength = 0.7f)
+            .padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(0.dp), modifier = Modifier.weight(1f)) {
+                repeat(5) { i ->
+                    val star = i + 1
+                    Icon(
+                        imageVector = if (star <= rating) Icons.Filled.Star else Icons.Filled.StarBorder,
+                        contentDescription = "Rate $star",
+                        tint = if (star <= rating) CeeceptColors.Accent else Color.White.copy(alpha = 0.50f),
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable { onRate(if (rating == star) 0 else star) }
+                    )
+                }
+            }
+            BouncyIconButton(onClick = onBookmark, contentDescription = "Add bookmark") {
+                Icon(
+                    Icons.Filled.BookmarkAdd,
+                    contentDescription = null,
+                    tint = Color.White.copy(alpha = 0.88f),
+                    modifier = Modifier.padding(6.dp).size(24.dp)
+                )
+            }
+        }
+        if (bookmarks.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                bookmarks.take(3).forEach { bookmark ->
+                    Row(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = if (kotlin.math.abs(bookmark.positionMs - positionMs) < 1500) 0.22f else 0.12f))
+                            .clickable { onSeekBookmark(bookmark) }
+                            .padding(start = 10.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(bookmark.label, style = MaterialTheme.typography.labelMedium, color = Color.White)
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Delete bookmark",
+                            tint = Color.White.copy(alpha = 0.72f),
+                            modifier = Modifier
+                                .padding(start = 4.dp)
+                                .size(16.dp)
+                                .clickable { onDeleteBookmark(bookmark) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LyricsCard(result: LyricsResult, positionMs: Long) {
+    val activeIndex = remember(result, positionMs) {
+        if (!result.timed) -1 else result.lines.indexOfLast { it.timeMs <= positionMs }
+    }
+    val displayLines = if (result.timed) {
+        val start = (activeIndex - 1).coerceAtLeast(0)
+        result.lines.drop(start).take(4).mapIndexed { i, line -> i + start to line.text }
+    } else {
+        result.plainText.lines().take(4).mapIndexed { i, line -> i to line }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glass(RoundedCornerShape(18.dp), strength = 0.75f)
+            .padding(12.dp)
+    ) {
+        Text(
+            text = "Lyrics · ${result.source}",
+            style = MaterialTheme.typography.labelLarge,
+            color = Color.White.copy(alpha = 0.76f)
+        )
+        Spacer(Modifier.height(4.dp))
+        displayLines.forEach { (index, line) ->
+            Text(
+                text = line,
+                style = if (index == activeIndex) MaterialTheme.typography.titleMedium else MaterialTheme.typography.bodyMedium,
+                color = if (index == activeIndex || !result.timed) Color.White else Color.White.copy(alpha = 0.58f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

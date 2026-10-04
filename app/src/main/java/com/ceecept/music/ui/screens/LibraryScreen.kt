@@ -54,6 +54,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -82,8 +84,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ceecept.music.CeeceptApp
 import com.ceecept.music.data.AlbumEntry
 import com.ceecept.music.data.ArtistEntry
+import com.ceecept.music.data.ComposerEntry
+import com.ceecept.music.data.GenreEntry
 import com.ceecept.music.data.Track
 import com.ceecept.music.data.TrackSort
+import com.ceecept.music.data.YearEntry
 import com.ceecept.music.ui.components.ArtworkView
 import com.ceecept.music.ui.components.BouncyIconButton
 import com.ceecept.music.ui.components.CeeceptTabRow
@@ -98,6 +103,9 @@ private sealed interface LibraryRoute {
     data class Artist(val name: String) : LibraryRoute
     data class Album(val albumId: Long) : LibraryRoute
     data class Playlist(val name: String) : LibraryRoute
+    data class Genre(val name: String) : LibraryRoute
+    data class Composer(val name: String) : LibraryRoute
+    data class Year(val year: Int) : LibraryRoute
 }
 
 @Composable
@@ -173,7 +181,10 @@ fun LibraryScreen(app: CeeceptApp) {
                 app = app,
                 onArtist = { route = LibraryRoute.Artist(it) },
                 onAlbum = { route = LibraryRoute.Album(it) },
-                onPlaylist = { route = LibraryRoute.Playlist(it) }
+                onPlaylist = { route = LibraryRoute.Playlist(it) },
+                onGenre = { route = LibraryRoute.Genre(it) },
+                onComposer = { route = LibraryRoute.Composer(it) },
+                onYear = { route = LibraryRoute.Year(it) }
             )
             is LibraryRoute.Artist -> ArtistDetail(
                 app = app,
@@ -189,6 +200,27 @@ fun LibraryScreen(app: CeeceptApp) {
             is LibraryRoute.Playlist -> PlaylistDetail(
                 app = app,
                 name = current.name,
+                onBack = { route = LibraryRoute.Root }
+            )
+            is LibraryRoute.Genre -> CategoryDetail(
+                app = app,
+                title = current.name,
+                subtitle = "Genre",
+                tracks = app.repository.tracksByGenre(current.name),
+                onBack = { route = LibraryRoute.Root }
+            )
+            is LibraryRoute.Composer -> CategoryDetail(
+                app = app,
+                title = current.name,
+                subtitle = "Composer",
+                tracks = app.repository.tracksByComposer(current.name),
+                onBack = { route = LibraryRoute.Root }
+            )
+            is LibraryRoute.Year -> CategoryDetail(
+                app = app,
+                title = current.year.toString(),
+                subtitle = "Year",
+                tracks = app.repository.tracksByYear(current.year),
                 onBack = { route = LibraryRoute.Root }
             )
         }
@@ -252,7 +284,10 @@ private fun LibraryRoot(
     app: CeeceptApp,
     onArtist: (String) -> Unit,
     onAlbum: (Long) -> Unit,
-    onPlaylist: (String) -> Unit
+    onPlaylist: (String) -> Unit,
+    onGenre: (String) -> Unit,
+    onComposer: (String) -> Unit,
+    onYear: (Int) -> Unit
 ) {
     val tracks by app.repository.tracks.collectAsStateWithLifecycle()
     val isLoading by app.repository.isLoading.collectAsStateWithLifecycle()
@@ -329,7 +364,7 @@ private fun LibraryRoot(
         ContinueListening(app = app)
         Spacer(Modifier.height(10.dp))
         CeeceptTabRow(
-            tabs = listOf("Songs", "Liked", "Lists", "Artists", "Albums", "Folders"),
+            tabs = listOf("Songs", "Liked", "Lists", "Artists", "Albums", "Folders", "Genres", "Composers", "Years"),
             selected = tab,
             onSelect = { tab = it },
             modifier = Modifier
@@ -395,11 +430,23 @@ private fun LibraryRoot(
                             app = app,
                             onAlbum = onAlbum
                         )
-                        else -> FolderList(
+                        5 -> FolderList(
                             folders = folders,
                             onFolder = { folder ->
                                 if (folder.tracks.isNotEmpty()) app.playerConnection.playQueue(folder.tracks, 0)
                             }
+                        )
+                        6 -> GenreList(
+                            genres = app.repository.genres().filter { it.name.contains(query, ignoreCase = true) },
+                            onGenre = onGenre
+                        )
+                        7 -> ComposerList(
+                            composers = app.repository.composers().filter { it.name.contains(query, ignoreCase = true) },
+                            onComposer = onComposer
+                        )
+                        else -> YearList(
+                            years = app.repository.years().filter { query.isBlank() || it.year.toString().contains(query) },
+                            onYear = onYear
                         )
                     }
                 }
@@ -583,6 +630,7 @@ private fun SongRow(
     val accent = MaterialTheme.colorScheme.primary
     val revision = app.history.revision.value
     val liked = remember(track.id, revision) { app.history.isLiked(track.id) }
+    val rating = remember(track.id, revision) { app.history.rating(track.id) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -620,6 +668,7 @@ private fun SongRow(
                 Spacer(Modifier.width(8.dp))
             }
         }
+        MiniRating(value = rating, onChange = { app.history.setRating(track.id, it) })
         BouncyIconButton(
             onClick = { app.history.toggleLike(track.id) },
             contentDescription = if (liked) "Unlike" else "Like"
@@ -647,6 +696,23 @@ private fun SongRow(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+    }
+}
+
+@Composable
+private fun MiniRating(value: Int, onChange: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy((-2).dp), verticalAlignment = Alignment.CenterVertically) {
+        repeat(5) { i ->
+            val star = i + 1
+            Icon(
+                imageVector = if (star <= value) Icons.Filled.Star else Icons.Filled.StarBorder,
+                contentDescription = "Rate $star",
+                tint = if (star <= value) CeeceptColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                modifier = Modifier
+                    .size(18.dp)
+                    .clickable { onChange(if (value == star) 0 else star) }
+            )
+        }
     }
 }
 
@@ -942,6 +1008,111 @@ private fun FolderList(folders: List<FolderEntry>, onFolder: (FolderEntry) -> Un
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun GenreList(genres: List<GenreEntry>, onGenre: (String) -> Unit) {
+    CategoryEntryList(
+        entries = genres,
+        key = { it.name },
+        title = { it.name },
+        subtitle = { "${it.trackCount} songs" },
+        icon = Icons.Filled.AudioFile,
+        onClick = { onGenre(it.name) }
+    )
+}
+
+@Composable
+private fun ComposerList(composers: List<ComposerEntry>, onComposer: (String) -> Unit) {
+    CategoryEntryList(
+        entries = composers,
+        key = { it.name },
+        title = { it.name },
+        subtitle = { "${it.trackCount} songs" },
+        icon = Icons.Filled.Person,
+        onClick = { onComposer(it.name) }
+    )
+}
+
+@Composable
+private fun YearList(years: List<YearEntry>, onYear: (Int) -> Unit) {
+    CategoryEntryList(
+        entries = years,
+        key = { it.year.toString() },
+        title = { it.year.toString() },
+        subtitle = { "${it.trackCount} songs" },
+        icon = Icons.Filled.LibraryMusic,
+        onClick = { onYear(it.year) }
+    )
+}
+
+@Composable
+private fun <T> CategoryEntryList(
+    entries: List<T>,
+    key: (T) -> String,
+    title: (T) -> String,
+    subtitle: (T) -> String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: (T) -> Unit
+) {
+    LazyColumn(
+        contentPadding = PaddingValues(bottom = 24.dp),
+        modifier = Modifier.fillMaxSize()
+    ) {
+        items(entries, key = { key(it) }) { entry ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(entry) }
+                    .padding(horizontal = 20.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(CeeceptColors.accentGradient()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(title(entry), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(subtitle(entry), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Icon(Icons.Filled.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoryDetail(
+    app: CeeceptApp,
+    title: String,
+    subtitle: String,
+    tracks: List<Track>,
+    onBack: () -> Unit
+) {
+    val isPlaying by app.playerConnection.isPlaying.collectAsStateWithLifecycle()
+    val currentTrack by app.playerConnection.currentTrack.collectAsStateWithLifecycle()
+    Column(modifier = Modifier.fillMaxSize()) {
+        DetailHeader(
+            title = title,
+            subtitle = "$subtitle · ${tracks.size} songs",
+            icon = Icons.Filled.LibraryMusic,
+            onBack = onBack,
+            onPlay = { if (tracks.isNotEmpty()) app.playerConnection.playQueue(tracks, 0) },
+            onShuffle = {
+                if (tracks.isNotEmpty()) {
+                    app.playerConnection.playQueue(tracks.shuffled(), 0)
+                    if (!isPlaying) app.playerConnection.togglePlayPause()
+                }
+            }
+        )
+        SongList(tracks = tracks, currentId = currentTrack?.id, app = app)
     }
 }
 

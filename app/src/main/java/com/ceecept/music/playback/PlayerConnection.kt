@@ -96,6 +96,9 @@ class PlayerConnection(
     private val _queueSize = MutableStateFlow(0)
     val queueSize: StateFlow<Int> = _queueSize.asStateFlow()
 
+    private val _sleepTimerEndMs = MutableStateFlow(0L)
+    val sleepTimerEndMs: StateFlow<Long> = _sleepTimerEndMs.asStateFlow()
+
     /** MediaController delivers these on the main thread. */
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -145,6 +148,7 @@ class PlayerConnection(
                 val c = _controller.value
                 if (c != null && c.isPlaying) {
                     syncPosition()
+                    checkSleepTimer(c)
                     updateDjTransition(c)
                     // Save the resume point about once a second.
                     if (++tick % 4 == 0) persistState()
@@ -597,6 +601,24 @@ class PlayerConnection(
                 Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
                 else -> Player.REPEAT_MODE_OFF
             }
+        }
+    }
+
+    fun setSleepTimer(minutes: Int) {
+        val clean = minutes.coerceIn(1, 240)
+        _sleepTimerEndMs.value = System.currentTimeMillis() + clean * 60_000L
+    }
+
+    fun clearSleepTimer() {
+        _sleepTimerEndMs.value = 0L
+    }
+
+    private fun checkSleepTimer(c: MediaController) {
+        val end = _sleepTimerEndMs.value
+        if (end > 0L && System.currentTimeMillis() >= end) {
+            _sleepTimerEndMs.value = 0L
+            c.pause()
+            persistState()
         }
     }
 

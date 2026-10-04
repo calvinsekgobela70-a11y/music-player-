@@ -10,6 +10,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.MediaMetadata
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -46,7 +47,17 @@ class PlayerService : MediaSessionService() {
             setReferenceCounted(false)
         }
         val renderers = CeeceptRenderersFactory(this, app.engine)
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                if (app.history.gaplessPreload) 32_000 else 12_000,
+                if (app.history.gaplessPreload) 90_000 else 45_000,
+                1_200,
+                2_500
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         val exo = ExoPlayer.Builder(this, renderers)
+            .setLoadControl(loadControl)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -57,6 +68,7 @@ class PlayerService : MediaSessionService() {
             .setWakeMode(C.WAKE_MODE_LOCAL)
             .setHandleAudioBecomingNoisy(true)
             .build()
+        exo.setForegroundMode(app.history.keepNotification)
         exo.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updatePlaybackWakeLock(exo)
@@ -84,9 +96,11 @@ class PlayerService : MediaSessionService() {
     }
 
     private fun updatePlaybackWakeLock(exo: ExoPlayer) {
+        val app = applicationContext as CeeceptApp
         val shouldHold = exo.playWhenReady &&
             exo.playbackState != Player.STATE_IDLE &&
             exo.playbackState != Player.STATE_ENDED
+        exo.setForegroundMode(shouldHold || app.history.keepNotification)
         val lock = wakeLock ?: return
         if (shouldHold) {
             if (!lock.isHeld) lock.acquire()
@@ -104,6 +118,16 @@ class PlayerService : MediaSessionService() {
         }
         super.onStartCommand(intent, flags, startId)
         return START_STICKY
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        val app = applicationContext as CeeceptApp
+        val exo = player
+        if (exo != null && (exo.isPlaying || app.history.keepNotification)) {
+            // Keep the MediaSession/notification alive when the recents card is swiped away.
+            return
+        }
+        super.onTaskRemoved(rootIntent)
     }
 
     private fun playExternalUri(uri: Uri) {

@@ -438,37 +438,55 @@ fun CeeceptTabRow(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        tabs.forEachIndexed { index, title ->
-            val isSelected = index == selected
-            val bg by androidx.compose.animation.animateColorAsState(
-                targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                label = "tabBg"
-            )
-            val fg by androidx.compose.animation.animateColorAsState(
-                targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface
-                else MaterialTheme.colorScheme.onSurfaceVariant,
-                label = "tabFg"
-            )
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(bg)
-                    .then(
-                        if (isSelected) Modifier.shadow(4.dp, RoundedCornerShape(12.dp)) else Modifier
-                    )
-                    .clickable { onSelect(index) }
-                    .padding(vertical = 9.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(text = title, style = MaterialTheme.typography.labelLarge, color = fg)
+    @Composable
+    fun TabPill(index: Int, title: String, tabModifier: Modifier) {
+        val isSelected = index == selected
+        val bg by androidx.compose.animation.animateColorAsState(
+            targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
+            label = "tabBg"
+        )
+        val fg by androidx.compose.animation.animateColorAsState(
+            targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            label = "tabFg"
+        )
+        Box(
+            modifier = tabModifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(bg)
+                .then(if (isSelected) Modifier.shadow(4.dp, RoundedCornerShape(12.dp)) else Modifier)
+                .clickable { onSelect(index) }
+                .padding(horizontal = if (tabs.size > 5) 14.dp else 0.dp, vertical = 9.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(text = title, style = MaterialTheme.typography.labelLarge, color = fg)
+        }
+    }
+
+    if (tabs.size > 5) {
+        LazyRow(
+            modifier = modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            tabs.forEachIndexed { index, title ->
+                item(key = "$index:$title") {
+                    TabPill(index, title, Modifier)
+                }
+            }
+        }
+    } else {
+        Row(
+            modifier = modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            tabs.forEachIndexed { index, title ->
+                TabPill(index, title, Modifier.weight(1f))
             }
         }
     }

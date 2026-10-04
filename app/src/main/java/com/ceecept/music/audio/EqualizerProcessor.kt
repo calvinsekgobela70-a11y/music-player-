@@ -165,6 +165,8 @@ class EqualizerProcessor : BaseAudioProcessor() {
         private set
 
     private val biquads = Array(BANDS) { Biquad() }
+    private val activeBands = IntArray(BANDS)
+    private var activeBandCount = 0
     private val subsonic = Biquad()
     private var subsonicStates: Array<BiquadState> = emptyArray()
     private var states: Array<Array<BiquadState>> = emptyArray()
@@ -256,18 +258,22 @@ class EqualizerProcessor : BaseAudioProcessor() {
             }
         }
 
-        // Process.
+        // Process. Active-band dispatch keeps the 16-band framework fully available
+        // while avoiding 16 no-op biquads per sample when sliders are flat.
         if (enabled) {
             val pre = Dsp.dbToLinear(preampDb + autoGainDb)
             val st = states
             val useSubsonic = subsonicFilter
+            val active = activeBands
+            val activeCount = activeBandCount
             for (f in 0 until frames) {
                 val base = f * channels
                 for (c in 0 until channels) {
                     var x = s[base + c] * pre
                     if (useSubsonic) x = subsonic.process(x, subsonicStates[c])
                     val chState = st[c]
-                    for (b in 0 until BANDS) {
+                    for (i in 0 until activeCount) {
+                        val b = active[i]
                         x = biquads[b].process(x, chState[b])
                     }
                     s[base + c] = x.coerceIn(-1.2f, 1.2f)
@@ -283,8 +289,10 @@ class EqualizerProcessor : BaseAudioProcessor() {
     private fun rebuild(sampleRate: Int) {
         val gains = gainsRef
         val musical = musicalQ
+        activeBandCount = 0
         for (b in 0 until BANDS) {
             configureBand(biquads[b], b, gains[b], sampleRate, musical)
+            if (kotlin.math.abs(gains[b]) > 0.001f) activeBands[activeBandCount++] = b
         }
         subsonic.setHighPass(20f, 0.7071f, sampleRate)
         autoGainDb = if (autoGain) -peakResponseDb(gains, sampleRate, musical).coerceAtLeast(0f) else 0f

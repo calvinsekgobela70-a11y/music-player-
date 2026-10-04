@@ -124,6 +124,7 @@ class DynamicsProcessor : BaseAudioProcessor() {
 
     private var scratch: FloatArray = FloatArray(0)
     private var bandScratch: FloatArray = FloatArray(0) // frames*channels*3
+    private val blockGainReductionDb = FloatArray(3)
 
     @Volatile private var dirty = true
 
@@ -248,7 +249,8 @@ class DynamicsProcessor : BaseAudioProcessor() {
         }
 
         // 2) Per-band linked dynamics.
-        val grDb = FloatArray(3)
+        val grDb = blockGainReductionDb
+        grDb[0] = 0f; grDb[1] = 0f; grDb[2] = 0f
         val makeupLin = autoMakeupLin
         for (f in 0 until frames) {
             for (b in 0..2) {

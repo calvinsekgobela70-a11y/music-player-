@@ -8,8 +8,10 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.ceecept.music.audio.AudioEngine
 import com.ceecept.music.data.AutoEqRepository
 import com.ceecept.music.data.DjAnalyzer
+import com.ceecept.music.data.LyricsRepository
 import com.ceecept.music.data.MusicRepository
 import com.ceecept.music.data.PlaybackHistory
+import com.ceecept.music.data.VisualizerRepository
 import com.ceecept.music.playback.PlayerConnection
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +65,8 @@ class CeeceptApp : Application() {
     val history: PlaybackHistory by lazy { PlaybackHistory(this) }
     val djAnalyzer: DjAnalyzer by lazy { DjAnalyzer(this) }
     val autoEqRepository: AutoEqRepository by lazy { AutoEqRepository(this) }
+    val lyricsRepository: LyricsRepository by lazy { LyricsRepository() }
+    val visualizerRepository: VisualizerRepository by lazy { VisualizerRepository(this) }
     val playerConnection: PlayerConnection by lazy {
         PlayerConnection(this, repository, history, engine, djAnalyzer, applicationScope)
     }

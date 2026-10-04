@@ -27,9 +27,10 @@ No account. No ads. No internet permission — your music never leaves your phon
 |---|---|
 | Formats | MP3, WAV, FLAC, OGG/Vorbis, Opus, M4A/AAC, … anything ExoPlayer + your device decodes (incl. 24-bit) |
 | Offline | 100% offline: library from MediaStore, no network permission at all |
-| Library | Songs / Liked / Playlists / Artists / Albums / Folders, instant search, Huawei-safe album-art recovery, continue listening, playlist creation/deletion, add-to-playlist, folder play, and sort by title/artist/album/date/recent/plays/duration/year |
-| Playback | Huawei-hardened background service, notification + headset/Bluetooth controls, shuffle, repeat, seek, remembered session state, and official Ceecept DJ Mode / Automix |
-| Interface | iOS 18-style glossy glass surfaces, Apple Music-like fixed-square artwork and much brighter animated artwork backdrop, Inter typeface (SF-spirited, bundled offline), spring-physics motion and seamless screen transitions |
+| Library | Songs / Liked / Playlists / Artists / Albums / Folders / Genres / Composers / Years, instant search, Huawei-safe album-art recovery, continue listening, playlist creation/deletion, add-to-playlist, folder play, local ratings, local bookmarks, full rescan, and sort by title/artist/album/date/recent/plays/duration/year |
+| Playback | Huawei-hardened background service, stronger Media3 foreground/codec mode, notification + headset/Bluetooth controls, gapless prebuffering, sleep timer, shuffle, repeat, seek, remembered session state, and official Ceecept DJ Mode / Automix |
+| Interface | iOS 18-style glossy glass surfaces, Apple Music-like fixed-square artwork, imported MilkDrop preset library with a faster brighter adaptive visualizer/backdrop, Inter typeface (SF-spirited, bundled offline), spring-physics motion and seamless screen transitions |
+| Lyrics / Visuals | Uploaded-app-style local lyrics matching from sidecar `.lrc`/`.txt` files, synced lyric highlighting in Now Playing, and 252 imported MilkDrop presets available offline |
 | Equalizer | 16 bands (31 Hz – 16 kHz), per-band Q from centre spacing, musical proportional-Q or precision constant-Q, shelf end-bands, subsonic filter, auto headroom, live response graph, and uploaded-app AutoEQ headphone preset import/search |
 | Uploaded-app DSP | Clean-room Poweramp-style tone/DVC stage rebuilt from the uploaded APK's exposed behaviour: DVC headroom, bass/treble shelves, stereo width, crossfeed, short room send and warm drive presets |
 | Dynamics | Phase-corrected 3-band crossover, per-band gate, hybrid RMS/peak soft-knee compressor, auto make-up, program release, live gain-reduction meters and lookahead limiter |
@@ -85,7 +86,7 @@ app/src/main/java/com/ceecept/music/
 │   │   └── SpatialAudioEngine.kt # the render pipeline                       (§11.1)
 │   ├── AudioEngine.kt            # state, presets, route detection, DataStore
 │   └── CeeceptRenderersFactory.kt# injects DSP chain into ExoPlayer (float)
-├── data/                         # MediaStore library, Huawei artwork recovery, likes/playlists/history, AutoEQ import, DJ analysis cache
+├── data/                         # MediaStore library, Huawei artwork recovery, likes/ratings/bookmarks/playlists/history, lyrics, visualizer presets, AutoEQ import, DJ analysis cache
 ├── playback/                     # MediaSessionService + MediaController bridge + DJ smart queue ordering
 └── ui/                           # Compose: theme, components, screens, nav
 ```
