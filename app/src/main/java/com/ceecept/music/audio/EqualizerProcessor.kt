@@ -235,6 +235,13 @@ class EqualizerProcessor : BaseAudioProcessor() {
         }
 
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        val noEqWork = !enabled || (!subsonicFilter && activeBandCount == 0 && kotlin.math.abs(preampDb + autoGainDb) < 0.001f)
+        if (noEqWork && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+            val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
+            out.put(inputBuffer)
+            out.flip()
+            return
+        }
         if (scratch.size < frames * channels) scratch = FloatArray(frames * channels)
         val s = scratch
 

@@ -9,13 +9,12 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.max
 
 /**
- * Poweramp-inspired tone/DVC stage ported from the uploaded APK's exposed DSP model.
+ * Poweramp-inspired tone/DVC polish stage for Ceecept's own DSP chain.
  *
- * The uploaded app's native `libpowerampcore.so` exposes a Poweramp-style chain with
- * DVC/headroom, bass/tone EQ, compressor/reverb and stereo controls. We cannot safely
- * link that protected native core into a Media3 app, so this is a clean Kotlin/Media3
- * implementation of the same recoverable behaviour: bass + treble shelves, DVC-like
- * pre-headroom, stereo width/crossfeed and a small tempo-synced room send.
+ * No protected uploaded-app DSP/native code is linked or copied here. This is a clean
+ * Kotlin/Media3 stage that gives phone playback practical DVC-like headroom, bass +
+ * treble shelves, stereo width/crossfeed and a small room send while preserving the
+ * existing Ceecept spatial/dynamics framework.
  */
 data class PowerampToneParams(
     val enabled: Boolean = true,
@@ -74,40 +73,45 @@ class PowerampDspProcessor : BaseAudioProcessor() {
     override fun queueInput(inputBuffer: ByteBuffer) {
         val format = inputAudioFormat
         if (format === AF.NOT_SET) return
-        val frames = inputBuffer.remaining() / format.bytesPerFrame
+        val remaining = inputBuffer.remaining()
+        val frames = remaining / format.bytesPerFrame
         if (frames <= 0) return
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        val p = params.get()
+        if (!p.enabled) {
+            val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
+            out.put(inputBuffer)
+            out.flip()
+            return
+        }
         val count = frames * channels
         if (scratch.size < count) scratch = FloatArray(count)
         for (i in 0 until count) scratch[i] = inputBuffer.float
 
-        val p = params.get()
-        if (p.enabled) {
-            rebuild(force = false)
-            val headroom = Dsp.dbToLinear(p.dvcHeadroomDb.coerceIn(-9f, 0f))
-            val drive = p.warmDrive.coerceIn(0f, 0.35f)
-            val wet = p.reverbMix.coerceIn(0f, 0.20f)
-            val width = p.stereoWidth.coerceIn(-0.25f, 0.60f)
-            val cross = p.crossfeed.coerceIn(0f, 0.22f)
-            for (f in 0 until frames) {
-                val base = f * channels
-                if (channels >= 2) {
-                    var l = processTone(scratch[base], 0, headroom, drive, wet)
-                    var r = processTone(scratch[base + 1], 1, headroom, drive, wet)
-                    val mid = (l + r) * 0.5f
-                    val side = (l - r) * (0.5f + width)
-                    val wl = mid + side
-                    val wr = mid - side
-                    l = wl * (1f - cross) + wr * cross
-                    r = wr * (1f - cross) + wl * cross
-                    scratch[base] = l.coerceIn(-1.12f, 1.12f)
-                    scratch[base + 1] = r.coerceIn(-1.12f, 1.12f)
-                    for (c in 2 until channels) {
-                        scratch[base + c] = processTone(scratch[base + c], c, headroom, drive, wet)
-                    }
-                } else {
-                    scratch[base] = processTone(scratch[base], 0, headroom, drive, wet)
+        rebuild(force = false)
+        val headroom = Dsp.dbToLinear(p.dvcHeadroomDb.coerceIn(-9f, 0f))
+        val drive = p.warmDrive.coerceIn(0f, 0.35f)
+        val wet = p.reverbMix.coerceIn(0f, 0.20f)
+        val width = p.stereoWidth.coerceIn(-0.25f, 0.60f)
+        val cross = p.crossfeed.coerceIn(0f, 0.22f)
+        for (f in 0 until frames) {
+            val base = f * channels
+            if (channels >= 2) {
+                var l = processTone(scratch[base], 0, headroom, drive, wet)
+                var r = processTone(scratch[base + 1], 1, headroom, drive, wet)
+                val mid = (l + r) * 0.5f
+                val side = (l - r) * (0.5f + width)
+                val wl = mid + side
+                val wr = mid - side
+                l = wl * (1f - cross) + wr * cross
+                r = wr * (1f - cross) + wl * cross
+                scratch[base] = l.coerceIn(-1.12f, 1.12f)
+                scratch[base + 1] = r.coerceIn(-1.12f, 1.12f)
+                for (c in 2 until channels) {
+                    scratch[base + c] = processTone(scratch[base + c], c, headroom, drive, wet)
                 }
+            } else {
+                scratch[base] = processTone(scratch[base], 0, headroom, drive, wet)
             }
         }
 

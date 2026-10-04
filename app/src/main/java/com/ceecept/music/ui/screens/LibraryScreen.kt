@@ -54,8 +54,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -630,7 +628,6 @@ private fun SongRow(
     val accent = MaterialTheme.colorScheme.primary
     val revision = app.history.revision.value
     val liked = remember(track.id, revision) { app.history.isLiked(track.id) }
-    val rating = remember(track.id, revision) { app.history.rating(track.id) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -668,7 +665,6 @@ private fun SongRow(
                 Spacer(Modifier.width(8.dp))
             }
         }
-        MiniRating(value = rating, onChange = { app.history.setRating(track.id, it) })
         BouncyIconButton(
             onClick = { app.history.toggleLike(track.id) },
             contentDescription = if (liked) "Unlike" else "Like"
@@ -696,23 +692,6 @@ private fun SongRow(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-    }
-}
-
-@Composable
-private fun MiniRating(value: Int, onChange: (Int) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy((-2).dp), verticalAlignment = Alignment.CenterVertically) {
-        repeat(5) { i ->
-            val star = i + 1
-            Icon(
-                imageVector = if (star <= value) Icons.Filled.Star else Icons.Filled.StarBorder,
-                contentDescription = "Rate $star",
-                tint = if (star <= value) CeeceptColors.Accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
-                modifier = Modifier
-                    .size(18.dp)
-                    .clickable { onChange(if (value == star) 0 else star) }
-            )
-        }
     }
 }
 

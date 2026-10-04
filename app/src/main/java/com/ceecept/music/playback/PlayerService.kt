@@ -1,21 +1,28 @@
 package com.ceecept.music.playback
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.OpenableColumns
 import android.os.PowerManager
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.MediaMetadata
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.ceecept.music.CeeceptApp
+import com.ceecept.music.R
 import com.ceecept.music.audio.CeeceptRenderersFactory
 
 /**
@@ -23,7 +30,14 @@ import com.ceecept.music.audio.CeeceptRenderersFactory
  * Ceecept DSP chain, exposes it through a MediaSession (notification,
  * headset / Bluetooth / Android Auto controls).
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerService : MediaSessionService() {
+
+    private companion object {
+        const val NOTIFICATION_ID = 7100
+        const val NOTIFICATION_CHANNEL_ID = "ceecept_playback"
+        const val NOTIFICATION_CHANNEL_NAME = "Ceecept playback"
+    }
 
     private var player: ExoPlayer? = null
     private var session: MediaSession? = null
@@ -32,6 +46,7 @@ class PlayerService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         try {
+            configureNotificationProvider()
             startEngine()
         } catch (e: Exception) {
             // Never kill the whole app if the playback engine fails to start;
@@ -39,6 +54,27 @@ class PlayerService : MediaSessionService() {
             com.ceecept.music.CrashReporter.recordSoft(this, "PlayerService.onCreate", e)
             stopSelf()
         }
+    }
+
+    private fun configureNotificationProvider() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                NOTIFICATION_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Playback controls for Ceecept"
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                setShowBadge(false)
+            }
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
+        }
+        val provider = DefaultMediaNotificationProvider.Builder(this)
+            .setNotificationId(NOTIFICATION_ID)
+            .setChannelId(NOTIFICATION_CHANNEL_ID)
+            .build()
+        provider.setSmallIcon(R.drawable.ic_stat_ceecept)
+        setMediaNotificationProvider(provider)
     }
 
     private fun startEngine() {

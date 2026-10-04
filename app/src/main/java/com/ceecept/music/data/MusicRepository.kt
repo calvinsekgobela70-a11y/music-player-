@@ -378,41 +378,69 @@ class MusicRepository(
         null
     }
 
-    /** cover.jpg / folder.jpg sitting in the same directory as the track. */
-    private fun folderArt(track: Track, sizePx: Int): Bitmap? = try {
-        val parent = track.filePath.takeIf { it.isNotBlank() }?.let { File(it).parentFile }
-        if (parent == null || !parent.canRead()) {
-            null
-        } else {
-            val names = listOf(
-                "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png", "folder.jpeg",
-                "album.jpg", "album.png", "albumart.jpg", "albumart.png", "front.jpg", "front.png",
-                "artwork.jpg", "artwork.png", "Cover.jpg", "Folder.jpg", ".folder.jpg", ".folder.png"
-            )
-            var found: Bitmap? = null
-            for (n in names) {
-                val f = File(parent, n)
-                if (f.isFile && f.length() > 0) {
-                    found = decodeFileSampled(f.absolutePath, sizePx)
-                    if (found != null) break
+    /** cover.jpg / folder.jpg / Track Name.jpg sitting in the same directory as the track. */
+    private fun folderArt(track: Track, sizePx: Int): Bitmap? {
+        return try {
+            val audioFile = track.filePath.takeIf { it.isNotBlank() }?.let { File(it) }
+            val parent = audioFile?.parentFile
+            if (parent == null || !parent.canRead()) {
+                null
+            } else {
+                val base = audioFile.nameWithoutExtension
+                val names = listOf(
+                    "$base.jpg", "$base.jpeg", "$base.png", "$base.webp",
+                    "cover.jpg", "cover.png", "cover.jpeg", "cover.webp",
+                    "folder.jpg", "folder.png", "folder.jpeg", "folder.webp",
+                    "album.jpg", "album.png", "album.jpeg", "album.webp",
+                    "albumart.jpg", "albumart.png", "front.jpg", "front.png",
+                    "artwork.jpg", "artwork.png", "Cover.jpg", "Folder.jpg", ".folder.jpg", ".folder.png"
+                )
+                for (n in names) {
+                    val f = File(parent, n)
+                    if (f.isFile && f.length() > 0) {
+                        val bmp = decodeFileSampled(f.absolutePath, sizePx)
+                        if (bmp != null) return bmp
+                    }
                 }
+                val imageExts = setOf("jpg", "jpeg", "png", "webp")
+                fun rank(file: File): Int {
+                    val n = file.nameWithoutExtension.lowercase()
+                    val b = base.lowercase()
+                    return when {
+                        n == b -> 0
+                        n == "cover" || n == "folder" || n == "front" -> 1
+                        "cover" in n || "folder" in n || "front" in n -> 2
+                        "album" in n || "artwork" in n || "art" in n -> 3
+                        else -> 99
+                    }
+                }
+                parent.listFiles()
+                    ?.asSequence()
+                    ?.filter { it.isFile && it.length() > 0 && it.extension.lowercase() in imageExts }
+                    ?.map { rank(it) to it }
+                    ?.filter { it.first < 99 }
+                    ?.sortedBy { it.first }
+                    ?.firstOrNull()
+                    ?.second
+                    ?.let { decodeFileSampled(it.absolutePath, sizePx) }
             }
-            found
+        } catch (e: Exception) {
+            null
         }
-    } catch (e: Exception) {
-        null
     }
 
     /** Try another track from the same album/folder when MediaStore only exposes art on one file. */
     private fun siblingArt(track: Track, sizePx: Int): Bitmap? {
         return try {
+            val folder = track.filePath.takeIf { it.isNotBlank() }?.let { File(it).parent }
             val siblings = _tracks.value.asSequence()
                 .filter { it.id != track.id }
                 .filter {
                     (track.albumId > 0 && it.albumId == track.albumId) ||
-                        (it.album.equals(track.album, ignoreCase = true) && it.artist.equals(track.artist, ignoreCase = true))
+                        (it.album.equals(track.album, ignoreCase = true) && it.artist.equals(track.artist, ignoreCase = true)) ||
+                        (folder != null && it.filePath.takeIf { p -> p.isNotBlank() }?.let { p -> File(p).parent } == folder)
                 }
-                .take(6)
+                .take(10)
                 .toList()
             for (s in siblings) {
                 val bmp = embeddedViaDescriptor(s, sizePx)

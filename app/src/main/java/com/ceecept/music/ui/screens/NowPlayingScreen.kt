@@ -18,6 +18,7 @@ import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
@@ -32,6 +33,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -54,8 +56,6 @@ import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -74,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -139,7 +140,6 @@ fun NowPlayingScreen(
     var feature by remember { mutableStateOf<NowFeature?>(null) }
     var lyrics by remember(track?.id) { mutableStateOf<LyricsResult?>(null) }
     val liked = remember(track?.id, historyRevision) { track?.let { app.history.isLiked(it.id) } ?: false }
-    val rating = remember(track?.id, historyRevision) { track?.let { app.history.rating(it.id) } ?: 0 }
     val bookmarks = remember(track?.id, historyRevision) { track?.let { app.history.bookmarksFor(it.id) } ?: emptyList() }
 
     LaunchedEffect(track?.id) {
@@ -261,7 +261,7 @@ fun NowPlayingScreen(
             FeatureRail(
                 hasLyrics = lyrics != null,
                 queueCount = queue.size,
-                rating = rating,
+                memoryCount = bookmarks.size,
                 onLyrics = { feature = NowFeature.LYRICS },
                 onQueue = { feature = NowFeature.QUEUE },
                 onMemory = { feature = NowFeature.MEMORY },
@@ -333,12 +333,10 @@ fun NowPlayingScreen(
                                 onRemove = { connection.removeQueueItem(it) },
                                 onClearUpcoming = { connection.clearQueueAfterCurrent() }
                             )
-                            NowFeature.INFO -> TrackInfoPage(track = track, rating = rating)
+                            NowFeature.INFO -> TrackInfoPage(track = track)
                             NowFeature.MEMORY -> MemoryFeaturePage(
-                                rating = rating,
                                 bookmarks = bookmarks,
                                 positionMs = positionMs,
-                                onRate = { value -> track?.let { app.history.setRating(it.id, value) } },
                                 onBookmark = { track?.let { app.history.addBookmark(it.id, positionMs) } },
                                 onSeekBookmark = { connection.seekTo(it.positionMs) },
                                 onDeleteBookmark = { bookmark -> track?.let { app.history.removeBookmark(it.id, bookmark.positionMs) } },
@@ -379,7 +377,7 @@ private fun NowHeader(onClose: () -> Unit, onOpenStudio: () -> Unit, onOpenInfo:
 private fun FeatureRail(
     hasLyrics: Boolean,
     queueCount: Int,
-    rating: Int,
+    memoryCount: Int,
     onLyrics: () -> Unit,
     onQueue: () -> Unit,
     onMemory: () -> Unit,
@@ -388,7 +386,7 @@ private fun FeatureRail(
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FeatureButton("Lyrics", if (hasLyrics) "SYNC" else "LOCAL", Icons.Filled.AutoAwesome, onLyrics, Modifier.weight(1f))
         FeatureButton("Queue", queueCount.coerceAtLeast(0).toString(), Icons.Filled.QueueMusic, onQueue, Modifier.weight(1f))
-        FeatureButton("Memory", if (rating > 0) "$rating★" else "Rate", Icons.Filled.BookmarkAdd, onMemory, Modifier.weight(1f))
+        FeatureButton("Memory", if (memoryCount > 0) "$memoryCount marks" else "Save", Icons.Filled.BookmarkAdd, onMemory, Modifier.weight(1f))
         FeatureButton("Studio", "DSP", Icons.Filled.GraphicEq, onStudio, Modifier.weight(1f))
     }
 }
@@ -437,13 +435,15 @@ private fun ModernPlaybackControls(
         ControlButton(Icons.Filled.SkipPrevious, false, "Previous", onPrevious, 56)
         Box(
             modifier = Modifier
-                .size(78.dp)
+                .size(80.dp)
+                .shadow(18.dp, CircleShape, ambientColor = Color.White.copy(alpha = 0.28f), spotColor = CeeceptColors.Accent.copy(alpha = 0.45f))
                 .clip(CircleShape)
-                .background(Color.White)
+                .background(Color.White.copy(alpha = 0.96f))
+                .background(CeeceptColors.Accent.copy(alpha = 0.16f))
                 .clickable { onPlayPause() },
             contentAlignment = Alignment.Center
         ) {
-            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = Color.Black, modifier = Modifier.size(42.dp))
+            Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = if (playing) "Pause" else "Play", tint = Color.Black, modifier = Modifier.size(43.dp))
         }
         ControlButton(Icons.Filled.SkipNext, false, "Next", onNext, 56)
         ControlButton(if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Filled.RepeatOne else Icons.Filled.Repeat, repeatMode != Player.REPEAT_MODE_OFF, "Repeat", onRepeat, 48)
@@ -455,12 +455,13 @@ private fun ControlButton(icon: ImageVector, active: Boolean, contentDescription
     Box(
         modifier = Modifier
             .size(size.dp)
-            .clip(CircleShape)
-            .background(if (active) CeeceptColors.Accent.copy(alpha = 0.95f) else Color.White.copy(alpha = 0.14f))
+            .shadow(if (active) 10.dp else 5.dp, CircleShape, ambientColor = CeeceptColors.Accent.copy(alpha = 0.22f), spotColor = Color.White.copy(alpha = 0.18f))
+            .glass(CircleShape, strength = if (active) 0.95f else 0.72f)
+            .background(if (active) CeeceptColors.Accent.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.08f))
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = contentDescription, tint = if (active) Color.Black else Color.White, modifier = Modifier.size((size * 0.46f).dp))
+        Icon(icon, contentDescription = contentDescription, tint = if (active) Color.Black else Color.White.copy(alpha = 0.94f), modifier = Modifier.size((size * 0.46f).dp))
     }
 }
 
@@ -529,39 +530,95 @@ private fun AppleLyricsPage(result: LyricsResult?, positionMs: Long) {
         EmptyFeature("No local lyrics found", "Put a matching .lrc or .txt next to this song and rescan.")
         return
     }
+
+    val lyricLines = remember(result) {
+        if (result.timed) {
+            result.lines.mapIndexedNotNull { index, line ->
+                line.text.trim().takeIf { it.isNotBlank() }?.let { index to it }
+            }
+        } else {
+            result.plainText.lines().mapIndexedNotNull { index, line ->
+                line.trim().takeIf { it.isNotBlank() }?.let { index to it }
+            }
+        }
+    }
+    if (lyricLines.isEmpty()) {
+        EmptyFeature("Lyrics file is empty", "Check the matching .lrc or .txt file and rescan.")
+        return
+    }
+
     val activeIndex = remember(result, positionMs) {
         if (!result.timed) -1 else result.lines.indexOfLast { it.timeMs <= positionMs }.coerceAtLeast(0)
     }
-    val lines = if (result.timed) {
-        val start = (activeIndex - 4).coerceAtLeast(0)
-        result.lines.drop(start).take(9).mapIndexed { i, line -> (start + i) to line.text }
-    } else {
-        result.plainText.lines().filter { it.isNotBlank() }.take(14).mapIndexed { i, line -> i to line }
+    val listState = rememberLazyListState()
+    LaunchedEffect(result, activeIndex) {
+        if (result.timed && activeIndex >= 0) {
+            val visibleIndex = lyricLines.indexOfFirst { it.first == activeIndex }.coerceAtLeast(0)
+            runCatching { listState.animateScrollToItem((visibleIndex - 3).coerceAtLeast(0)) }
+        }
     }
-    Column(
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .glass(RoundedCornerShape(30.dp), strength = 0.58f)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.Center
     ) {
-        Text("Source · ${result.source}", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.58f))
-        Spacer(Modifier.height(12.dp))
-        lines.forEach { (index, text) ->
-            val active = !result.timed || index == activeIndex
-            val alpha by animateFloatAsState(targetValue = if (active) 1f else 0.34f, animationSpec = tween(180), label = "lyricAlpha")
-            val scale by animateFloatAsState(targetValue = if (active) 1.035f else 0.965f, animationSpec = tween(180), label = "lyricScale")
-            Text(
-                text = text,
-                style = if (active) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
-                color = Color.White.copy(alpha = alpha),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 5.dp)
-                    .graphicsLayer(scaleX = scale, scaleY = scale)
-            )
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 92.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item(key = "source") {
+                Text(
+                    "Source · ${result.source}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = Color.White.copy(alpha = 0.58f),
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+            }
+            itemsIndexed(lyricLines, key = { _, item -> "${item.first}:${item.second}" }) { _, item ->
+                val index = item.first
+                val text = item.second
+                val active = !result.timed || index == activeIndex
+                val near = result.timed && kotlin.math.abs(index - activeIndex) <= 1
+                val alpha by animateFloatAsState(
+                    targetValue = when {
+                        active -> 1f
+                        near -> 0.58f
+                        else -> 0.28f
+                    },
+                    animationSpec = tween(220),
+                    label = "lyricAlpha"
+                )
+                val scale by animateFloatAsState(
+                    targetValue = if (active) 1.055f else if (near) 0.99f else 0.955f,
+                    animationSpec = tween(220),
+                    label = "lyricScale"
+                )
+                val x by animateFloatAsState(
+                    targetValue = if (active) 0f else 10f,
+                    animationSpec = tween(220),
+                    label = "lyricSlide"
+                )
+                Text(
+                    text = text,
+                    style = if (active) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                    color = Color.White.copy(alpha = alpha),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = x
+                        }
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (active) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
         }
     }
 }
@@ -607,7 +664,7 @@ private fun QueueFeaturePage(
 }
 
 @Composable
-private fun TrackInfoPage(track: Track?, rating: Int) {
+private fun TrackInfoPage(track: Track?) {
     if (track == null) {
         EmptyFeature("No track selected", "Start playing a song to inspect its tags.")
         return
@@ -627,7 +684,6 @@ private fun TrackInfoPage(track: Track?, rating: Int) {
         InfoTag("Genre", track.genre.ifBlank { "—" })
         InfoTag("Composer", track.composer.ifBlank { "—" })
         InfoTag("Year", if (track.year > 0) track.year.toString() else "—")
-        InfoTag("Rating", if (rating > 0) "$rating / 5" else "Not rated")
         InfoTag("Duration", formatDuration(track.durationMs))
         InfoTag("File", track.filePath.ifBlank { track.uri.toString() })
     }
@@ -635,10 +691,8 @@ private fun TrackInfoPage(track: Track?, rating: Int) {
 
 @Composable
 private fun MemoryFeaturePage(
-    rating: Int,
     bookmarks: List<TrackBookmark>,
     positionMs: Long,
-    onRate: (Int) -> Unit,
     onBookmark: () -> Unit,
     onSeekBookmark: (TrackBookmark) -> Unit,
     onDeleteBookmark: (TrackBookmark) -> Unit,
@@ -651,19 +705,12 @@ private fun MemoryFeaturePage(
                 .glass(RoundedCornerShape(28.dp), strength = 0.66f)
                 .padding(18.dp)
         ) {
-            Text("Rating", style = MaterialTheme.typography.titleMedium, color = Color.White)
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                repeat(5) { i ->
-                    val star = i + 1
-                    Icon(
-                        imageVector = if (star <= rating) Icons.Filled.Star else Icons.Filled.StarBorder,
-                        contentDescription = "Rate $star",
-                        tint = if (star <= rating) CeeceptColors.Accent else Color.White.copy(alpha = 0.42f),
-                        modifier = Modifier.size(34.dp).clickable { onRate(if (rating == star) 0 else star) }
-                    )
-                }
-            }
+            Text("Memory", style = MaterialTheme.typography.titleMedium, color = Color.White)
+            Text(
+                "Save this exact moment or add the song to a playlist. Likes stay on the main player for fast access.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.68f)
+            )
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = onBookmark) { Text("Bookmark ${formatDuration(positionMs)}") }
