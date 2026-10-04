@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
@@ -24,6 +25,10 @@ import androidx.media3.session.MediaSessionService
 import com.ceecept.music.CeeceptApp
 import com.ceecept.music.R
 import com.ceecept.music.audio.CeeceptRenderersFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 
 /**
  * Background playback service. Owns the ExoPlayer instance wired with the
@@ -107,6 +112,10 @@ class PlayerService : MediaSessionService() {
             .build()
         exo.setForegroundMode(app.history.keepNotification)
         exo.addListener(object : Player.Listener {
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                enrichNotificationArtwork(app, exo, mediaItem)
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updatePlaybackWakeLock(exo)
             }
@@ -140,6 +149,29 @@ class PlayerService : MediaSessionService() {
             .setSessionActivity(sessionActivity)
             .build()
         addSession(session!!)
+    }
+
+    private fun enrichNotificationArtwork(app: CeeceptApp, exo: ExoPlayer, item: MediaItem?) {
+        val mediaItem = item ?: return
+        if (mediaItem.mediaMetadata.artworkData != null) return
+        val id = mediaItem.mediaId.toLongOrNull() ?: return
+        val track = app.repository.findById(id) ?: return
+        app.applicationScope.launch(Dispatchers.IO) {
+            val bitmap = app.repository.artwork(track, 512) ?: return@launch
+            val bytes = ByteArrayOutputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)
+                out.toByteArray()
+            }
+            withContext(Dispatchers.Main) {
+                val liveIndex = exo.currentMediaItemIndex
+                val liveItem = exo.currentMediaItem ?: return@withContext
+                if (liveItem.mediaId != mediaItem.mediaId || liveItem.mediaMetadata.artworkData != null) return@withContext
+                val metadata = liveItem.mediaMetadata.buildUpon()
+                    .setArtworkData(bytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                    .build()
+                exo.replaceMediaItem(liveIndex, liveItem.buildUpon().setMediaMetadata(metadata).build())
+            }
+        }
     }
 
     private fun updatePlaybackWakeLock(exo: ExoPlayer) {

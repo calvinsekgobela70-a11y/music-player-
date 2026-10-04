@@ -324,7 +324,12 @@ fun NowPlayingScreen(
                         label = "nowFeature"
                     ) { page ->
                         when (page) {
-                            NowFeature.LYRICS -> AppleLyricsPage(lyrics, positionMs)
+                            NowFeature.LYRICS -> AppleLyricsPage(
+                                result = lyrics,
+                                positionMs = positionMs,
+                                track = track,
+                                repository = app.repository
+                            )
                             NowFeature.QUEUE -> QueueFeaturePage(
                                 queue = queue,
                                 currentIndex = currentIndex,
@@ -525,7 +530,12 @@ private fun FeaturePageScaffold(
 }
 
 @Composable
-private fun AppleLyricsPage(result: LyricsResult?, positionMs: Long) {
+private fun AppleLyricsPage(
+    result: LyricsResult?,
+    positionMs: Long,
+    track: Track?,
+    repository: com.ceecept.music.data.MusicRepository
+) {
     if (result == null) {
         EmptyFeature("No local lyrics found", "Put a matching .lrc or .txt next to this song and rescan.")
         return
@@ -554,56 +564,84 @@ private fun AppleLyricsPage(result: LyricsResult?, positionMs: Long) {
     LaunchedEffect(result, activeIndex) {
         if (result.timed && activeIndex >= 0) {
             val visibleIndex = lyricLines.indexOfFirst { it.first == activeIndex }.coerceAtLeast(0)
-            runCatching { listState.animateScrollToItem((visibleIndex - 3).coerceAtLeast(0)) }
+            runCatching { listState.animateScrollToItem((visibleIndex - 2).coerceAtLeast(0)) }
         }
     }
 
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .glass(RoundedCornerShape(30.dp), strength = 0.58f)
+            .glass(RoundedCornerShape(30.dp), strength = 0.40f)
+            .padding(14.dp)
     ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .glass(RoundedCornerShape(24.dp), strength = 0.52f)
+                .padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ArtworkView(track = track, repository = repository, modifier = Modifier.size(54.dp), cornerRadius = 13.dp, thumbSize = 256)
+            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                Text(track?.title ?: "Lyrics", style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = if (result.timed) "Timed lyrics · ${result.source}" else "Plain lyrics · ${result.source}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.58f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .background(if (result.timed) CeeceptColors.Accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+                Text(if (result.timed) "AUTO" else "TEXT", style = MaterialTheme.typography.labelSmall, color = if (result.timed) CeeceptColors.Accent else Color.White.copy(alpha = 0.70f))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 92.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            item(key = "source") {
-                Text(
-                    "Source · ${result.source}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.58f),
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-            }
             itemsIndexed(lyricLines, key = { _, item -> "${item.first}:${item.second}" }) { _, item ->
                 val index = item.first
                 val text = item.second
-                val active = !result.timed || index == activeIndex
-                val near = result.timed && kotlin.math.abs(index - activeIndex) <= 1
+                val active = result.timed && index == activeIndex
+                val distance = if (result.timed) kotlin.math.abs(index - activeIndex) else 0
                 val alpha by animateFloatAsState(
                     targetValue = when {
+                        !result.timed -> 0.86f
                         active -> 1f
-                        near -> 0.58f
-                        else -> 0.28f
+                        distance == 1 -> 0.56f
+                        distance == 2 -> 0.34f
+                        else -> 0.18f
                     },
-                    animationSpec = tween(220),
+                    animationSpec = tween(240),
                     label = "lyricAlpha"
                 )
                 val scale by animateFloatAsState(
-                    targetValue = if (active) 1.055f else if (near) 0.99f else 0.955f,
-                    animationSpec = tween(220),
+                    targetValue = when {
+                        !result.timed -> 1f
+                        active -> 1.06f
+                        distance == 1 -> 0.99f
+                        else -> 0.94f
+                    },
+                    animationSpec = tween(240),
                     label = "lyricScale"
                 )
                 val x by animateFloatAsState(
-                    targetValue = if (active) 0f else 10f,
-                    animationSpec = tween(220),
+                    targetValue = if (active) 0f else 14f,
+                    animationSpec = tween(240),
                     label = "lyricSlide"
                 )
                 Text(
                     text = text,
-                    style = if (active) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                    style = if (active) MaterialTheme.typography.headlineLarge else if (result.timed) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
                     color = Color.White.copy(alpha = alpha),
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
@@ -614,9 +652,9 @@ private fun AppleLyricsPage(result: LyricsResult?, positionMs: Long) {
                             scaleY = scale
                             translationX = x
                         }
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(if (active) Color.White.copy(alpha = 0.08f) else Color.Transparent)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(if (active) Color.White.copy(alpha = 0.07f) else Color.Transparent)
+                        .padding(horizontal = 18.dp, vertical = 10.dp)
                 )
             }
         }

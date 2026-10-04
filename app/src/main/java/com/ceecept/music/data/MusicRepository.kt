@@ -3,6 +3,13 @@ package com.ceecept.music.data
 import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -33,6 +40,7 @@ class MusicRepository(
     private val byId = mutableMapOf<Long, Track>()
 
     private val artCache = LruCache<Long, Bitmap>(96)
+    private val generatedArtCache = LruCache<Long, Bitmap>(160)
 
     /** Album art paths from the MediaStore albums table, resolved once per scan. */
     private val albumArtPaths = mutableMapOf<Long, String>()
@@ -272,14 +280,17 @@ class MusicRepository(
      * some OEM builds need), the tags through a content URI, a cover image sitting next
      * to the track, and finally the provider thumbnail API.
      *
-     * Null only when the album genuinely carries no picture anywhere.
+     * If the song truly has no embedded/folder/provider artwork, Ceecept returns a
+     * deterministic generated cover instead of leaving the list visually blank.
      */
     suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? {
         val key = if (track.albumId > 0) track.albumId else -track.id
         artCache.get(key)?.let { return it }
         synchronized(artMisses) {
             val missedAt = artMisses[key]
-            if (missedAt != null && System.currentTimeMillis() - missedAt < missRetryMs) return null
+            if (missedAt != null && System.currentTimeMillis() - missedAt < missRetryMs) {
+                return generatedArtwork(track, sizePx)
+            }
         }
         return withContext(Dispatchers.IO) {
             val bmp = albumArtFile(track, sizePx)
@@ -294,14 +305,65 @@ class MusicRepository(
             if (bmp != null) {
                 artCache.put(key, bmp)
                 synchronized(artMisses) { artMisses.remove(key) }
-            } else if (sizePx == 512) {
-                // Do not negative-cache failed oversized decodes — or tiny song-list
-                // probes. Some EMUI builds fail one route/size while 512 succeeds later;
-                // only a full 512 px probe is authoritative enough to delay retries.
-                synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
+                bmp
+            } else {
+                if (sizePx >= 320) {
+                    // Do not hit MediaStore/retrievers constantly for tracks that have no
+                    // art. This expiry still allows EMUI provider warm-up to recover later.
+                    synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
+                }
+                generatedArtwork(track, sizePx)
             }
-            bmp
         }
+    }
+
+    /** Pretty offline fallback for files that genuinely have no cover art. */
+    private fun generatedArtwork(track: Track, sizePx: Int): Bitmap? = try {
+        val albumKey = if (track.albumId > 0) track.albumId else -track.id
+        val size = sizePx.coerceIn(96, 768)
+        val bucket = when {
+            size >= 512 -> 512L
+            size >= 256 -> 256L
+            else -> 128L
+        }
+        val key = albumKey * 31L + bucket
+        generatedArtCache.get(key)?.let { return it }
+        val seed = (track.title + track.artist + track.album).hashCode()
+        fun channel(shift: Int, min: Int = 54): Int = min + ((seed ushr shift) and 0x7F)
+        val c1 = Color.rgb(channel(0), channel(7), channel(14))
+        val c2 = Color.rgb(channel(5, 24), channel(12, 36), channel(19, 72))
+        val c3 = Color.rgb(channel(9, 90), channel(16, 32), channel(23, 48))
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(0f, 0f, size.toFloat(), size.toFloat(), intArrayOf(c1, c2, c3), null, Shader.TileMode.CLAMP)
+        }
+        canvas.drawRect(0f, 0f, size.toFloat(), size.toFloat(), paint)
+        val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(72, 255, 255, 255) }
+        canvas.drawCircle(size * 0.25f, size * 0.18f, size * 0.42f, glow)
+        val title = track.title.trim().ifBlank { track.artist.trim() }.ifBlank { "C" }
+        val words = title.split(Regex("\\s+"), limit = 3).filter { it.isNotBlank() }
+        val initials = words.take(2).joinToString("") { it.first().uppercaseChar().toString() }.ifBlank { "♪" }
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textSize = size * if (initials.length <= 1) 0.42f else 0.32f
+            setShadowLayer(size * 0.035f, 0f, size * 0.018f, Color.argb(120, 0, 0, 0))
+        }
+        val bounds = Rect()
+        textPaint.getTextBounds(initials, 0, initials.length, bounds)
+        canvas.drawText(initials, size / 2f, size / 2f - bounds.exactCenterY(), textPaint)
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(80, 255, 255, 255)
+            strokeWidth = size * 0.018f
+            style = Paint.Style.STROKE
+            canvas.drawCircle(size * 0.82f, size * 0.82f, size * 0.11f, this)
+        }
+        generatedArtCache.put(key, bmp)
+        bmp
+    } catch (e: Exception) {
+        null
     }
 
     /** The cover file the media scanner already extracted for this album. */

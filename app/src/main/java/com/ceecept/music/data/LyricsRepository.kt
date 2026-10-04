@@ -71,6 +71,12 @@ class LyricsRepository {
         val text = file.readText(Charsets.UTF_8).ifBlank { file.readText(Charsets.ISO_8859_1) }
         val lines = ArrayList<LyricsLine>()
         val timeRegex = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+        val offsetMs = Regex("\\[offset:([+-]?\\d+)]", RegexOption.IGNORE_CASE)
+            .find(text)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toLongOrNull()
+            ?: 0L
         text.lineSequence().forEach { raw ->
             val matches = timeRegex.findAll(raw).toList()
             val lyric = raw.replace(timeRegex, "").trim()
@@ -85,7 +91,7 @@ class LyricsRepository {
                         2 -> frac.toLong() * 10L
                         else -> frac.take(3).toLong()
                     }
-                    lines += LyricsLine(min * 60_000L + sec * 1000L + ms, lyric)
+                    lines += LyricsLine((min * 60_000L + sec * 1000L + ms + offsetMs).coerceAtLeast(0L), lyric)
                 }
             }
         }

@@ -28,7 +28,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.ArrayDeque
 import java.util.Collections
+
+private const val DJ_ANALYSIS_PRIORITY_WINDOW = 14
+private const val DJ_REORDER_WINDOW = 24
 
 private data class DjTransitionPlan(
     val type: Int,
@@ -60,6 +64,12 @@ class PlayerConnection(
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
     private val analysingIds = Collections.synchronizedSet(mutableSetOf<Long>())
+    private val analysisLock = Any()
+    private val pendingAnalysis = ArrayDeque<Track>()
+    private val queuedAnalysisIds = mutableSetOf<Long>()
+    @Volatile private var analysisWorkerActive = false
+    @Volatile private var reorderAfterAnalysis = false
+    @Volatile private var reorderInFlight = false
 
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller.asStateFlow()
@@ -387,64 +397,142 @@ class PlayerConnection(
 
     private fun warmDjAnalysis() {
         if (!_djMode.value) return
-        val tracks = runCatching { repository.tracks.value }.getOrElse { emptyList() }
-        if (tracks.isEmpty()) return
+        val c = _controller.value
+        val start = c?.currentMediaItemIndex?.coerceAtLeast(0) ?: history.queueIndex.coerceAtLeast(0)
         val idsToWarm = buildList {
             _currentTrack.value?.id?.let { add(it) }
-            val c = _controller.value
             if (c != null) {
+                val end = minOf(c.mediaItemCount, start + DJ_ANALYSIS_PRIORITY_WINDOW)
+                for (i in start until end) {
+                    runCatching { c.getMediaItemAt(i).mediaId.toLongOrNull() }.getOrNull()?.let { add(it) }
+                }
+            } else {
                 val queueIds = history.queueIds
-                val start = c.currentMediaItemIndex.coerceAtLeast(0)
-                for (i in start until minOf(queueIds.size, start + 5)) add(queueIds[i])
+                for (i in start until minOf(queueIds.size, start + DJ_ANALYSIS_PRIORITY_WINDOW)) add(queueIds[i])
             }
         }.distinct()
         analyzeTracksAsync(idsToWarm.mapNotNull { repository.findById(it) }, reorderWhenDone = true)
     }
 
     private fun analyzeTracksAsync(tracks: List<Track>, reorderWhenDone: Boolean = false) {
-        val todo = tracks.filter { history.djAnalysis(it.id) == null && analysingIds.add(it.id) }
-        if (todo.isEmpty()) {
-            if (reorderWhenDone) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
-            return
-        }
-        appScope.launch(Dispatchers.IO) {
-            runCatching {
-                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
-            }
-            todo.forEach { track ->
-                try {
-                    val analysis = djAnalyzer.analyze(track)
-                    history.saveDjAnalysis(analysis)
-                } catch (e: Exception) {
-                    com.ceecept.music.CrashReporter.recordSoft(appContext, "DjAnalyzer", e)
-                } finally {
-                    analysingIds.remove(track.id)
+        if (tracks.isEmpty()) return
+        var shouldStartWorker = false
+        var enqueuedAny = false
+        synchronized(analysisLock) {
+            if (reorderWhenDone) reorderAfterAnalysis = true
+            for (track in tracks) {
+                if (history.djAnalysis(track.id) == null && queuedAnalysisIds.add(track.id)) {
+                    pendingAnalysis.addLast(track)
+                    enqueuedAny = true
                 }
             }
-            if (reorderWhenDone) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+            if (!analysisWorkerActive && pendingAnalysis.isNotEmpty()) {
+                analysisWorkerActive = true
+                shouldStartWorker = true
+            }
+        }
+        if (shouldStartWorker) {
+            appScope.launch(Dispatchers.IO) { runAnalysisWorker() }
+        } else if (reorderWhenDone && !enqueuedAny) {
+            mainHandler.post { reorderUpcomingQueueFromAnalyses() }
         }
     }
 
+    private suspend fun runAnalysisWorker() {
+        runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
+        var analysedSinceReorder = 0
+        while (true) {
+            val track = synchronized(analysisLock) { pendingAnalysis.pollFirst() } ?: break
+            analysingIds.add(track.id)
+            try {
+                val analysis = djAnalyzer.analyze(track)
+                history.saveDjAnalysis(analysis)
+                analysedSinceReorder++
+                if (analysedSinceReorder >= 2) {
+                    analysedSinceReorder = 0
+                    mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+                }
+            } catch (e: Exception) {
+                com.ceecept.music.CrashReporter.recordSoft(appContext, "DjAnalyzer", e)
+            } finally {
+                analysingIds.remove(track.id)
+                synchronized(analysisLock) { queuedAnalysisIds.remove(track.id) }
+            }
+            // Keep playback responsive on Huawei/EMUI: yield between MediaCodec analyses
+            // instead of hammering storage/CPU when AutoMix is switched on.
+            delay(if (_isPlaying.value) 180L else 70L)
+        }
+        val shouldReorder = synchronized(analysisLock) {
+            analysisWorkerActive = false
+            val r = reorderAfterAnalysis || analysedSinceReorder > 0
+            reorderAfterAnalysis = false
+            r
+        }
+        if (shouldReorder) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+        var restart = false
+        synchronized(analysisLock) {
+            if (!analysisWorkerActive && pendingAnalysis.isNotEmpty()) {
+                analysisWorkerActive = true
+                restart = true
+            }
+        }
+        if (restart) appScope.launch(Dispatchers.IO) { runAnalysisWorker() }
+    }
+
     private fun reorderUpcomingQueueFromAnalyses() {
-        if (!_djMode.value) return
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+            return
+        }
+        if (!_djMode.value || reorderInFlight) return
         val c = _controller.value ?: return
         if (c.mediaItemCount < 3) return
-        val ids = (0 until c.mediaItemCount).mapNotNull { i ->
-            runCatching { c.getMediaItemAt(i).mediaId.toLongOrNull() }.getOrNull()
+        val mediaCount = c.mediaItemCount
+        val index = c.currentMediaItemIndex.coerceIn(0, mediaCount - 1)
+        val currentId = c.currentMediaItem?.mediaId?.toLongOrNull() ?: return
+        val syncedQueue = _queueTracks.value
+        val tracks = if (syncedQueue.size == mediaCount) {
+            syncedQueue
+        } else {
+            val ids = (0 until mediaCount).mapNotNull { i ->
+                runCatching { c.getMediaItemAt(i).mediaId.toLongOrNull() }.getOrNull()
+            }
+            if (ids.size != mediaCount) return
+            repository.findAll(ids)
         }
-        if (ids.size != c.mediaItemCount) return
-        val tracks = repository.findAll(ids)
-        if (tracks.size != ids.size) return
-        val index = c.currentMediaItemIndex.coerceIn(0, tracks.lastIndex)
+        if (tracks.size != mediaCount || index !in tracks.indices) return
         val current = tracks[index]
-        val future = tracks.drop(index + 1)
-        if (future.size < 2) return
-        val (ordered, _) = smartDjOrder(listOf(current) + future, 0)
-        val newQueue = tracks.take(index) + ordered
-        val pos = c.currentPosition.coerceAtLeast(0)
-        c.setMediaItems(newQueue.map { it.toMediaItem() }, index, pos)
-        c.prepare()
-        persistQueue(newQueue, index)
+        val windowEnd = minOf(tracks.size, index + 1 + DJ_REORDER_WINDOW)
+        val futureWindow = tracks.subList(index + 1, windowEnd)
+        if (futureWindow.size < 2) return
+        if (futureWindow.count { history.djAnalysis(it.id) != null } < 2) return
+
+        reorderInFlight = true
+        appScope.launch(Dispatchers.Default) {
+            val orderedWindow = smartDjOrder(listOf(current) + futureWindow, 0).first.drop(1)
+            val oldIds = futureWindow.map { it.id }
+            val newIds = orderedWindow.map { it.id }
+            if (oldIds == newIds) {
+                mainHandler.post { reorderInFlight = false }
+                return@launch
+            }
+            val newQueue = tracks.take(index + 1) + orderedWindow + tracks.drop(windowEnd)
+            mainHandler.post {
+                try {
+                    val live = _controller.value ?: return@post
+                    val liveCurrent = live.currentMediaItem?.mediaId?.toLongOrNull()
+                    if (!_djMode.value || live.mediaItemCount != mediaCount || live.currentMediaItemIndex != index || liveCurrent != currentId) {
+                        return@post
+                    }
+                    live.replaceMediaItems(index + 1, windowEnd, orderedWindow.map { it.toMediaItem() })
+                    syncQueue(live)
+                    persistQueue(newQueue, index)
+                    warmDjAnalysis()
+                } finally {
+                    reorderInFlight = false
+                }
+            }
+        }
     }
 
     private fun smartDjOrder(tracks: List<Track>, startIndex: Int): Pair<List<Track>, Int> {
@@ -530,17 +618,20 @@ class PlayerConnection(
 
     fun playQueue(tracks: List<Track>, startIndex: Int) {
         if (tracks.isEmpty()) return
-        val (queue, index) = smartDjOrder(tracks, startIndex)
+        val queue = tracks
+        val index = startIndex.coerceIn(0, queue.lastIndex)
         persistQueue(queue, index)
         history.recordPlay(queue[index].id)
-        if (_djMode.value) analyzeTracksAsync(queue, reorderWhenDone = true)
         onMain { c ->
             c.setMediaItems(queue.map { it.toMediaItem() })
             c.seekToDefaultPosition(index)
             c.prepare()
             c.play()
             syncQueue(c)
-            warmDjAnalysis()
+            if (_djMode.value) {
+                warmDjAnalysis()
+                reorderUpcomingQueueFromAnalyses()
+            }
         }
     }
 
@@ -550,8 +641,11 @@ class PlayerConnection(
         if (!enabled) {
             engine.dj.setTransition(false, DjTransitionProcessor.MODE_NONE, 0f, 120f)
         } else {
-            warmDjAnalysis()
-            analyzeTracksAsync(repository.tracks.value, reorderWhenDone = true)
+            onMain { c ->
+                syncQueue(c)
+                warmDjAnalysis()
+                reorderUpcomingQueueFromAnalyses()
+            }
         }
     }
 
