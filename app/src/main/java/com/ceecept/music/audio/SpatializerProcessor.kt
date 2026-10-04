@@ -217,17 +217,18 @@ class SpatializerProcessor : BaseAudioProcessor() {
 
         val inChannels = inFormat.channelCount
         val bytesPerFrame = inFormat.bytesPerFrame
+        val startPosition = inputBuffer.position()
         val remaining = inputBuffer.remaining()
-        if (!p.enabled && inChannels == 2 && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
-            val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
-            out.put(inputBuffer)
-            out.flip()
-            return
-        }
         if (remaining == 0) return
         val frames = remaining / bytesPerFrame
-        if (frames == 0) {
+        val processBytes = frames * bytesPerFrame
+        if (frames == 0 || processBytes <= 0) {
             inputBuffer.position(inputBuffer.limit())
+            return
+        }
+
+        if (!p.enabled && inChannels == 2 && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+            copyExactFrames(inputBuffer, startPosition, processBytes)
             return
         }
 
@@ -236,8 +237,27 @@ class SpatializerProcessor : BaseAudioProcessor() {
         val s = scratch
 
         decodeToStereo(inputBuffer, inFormat, inChannels, frames, s)
+        // MediaCodec/AudioSink can occasionally hand a partial frame around flush or
+        // decoder-format changes on EMUI. Always consume it so the pipeline cannot
+        // re-enter with a dangling non-frame-aligned ByteBuffer and crash in put().
+        inputBuffer.position(inputBuffer.limit())
         engine.process(s, frames)
         writeOutput(s, frames)
+    }
+
+    private fun copyExactFrames(inputBuffer: ByteBuffer, startPosition: Int, byteCount: Int) {
+        val safeBytes = byteCount.coerceAtMost(inputBuffer.limit() - startPosition).coerceAtLeast(0)
+        if (safeBytes == 0) {
+            inputBuffer.position(inputBuffer.limit())
+            return
+        }
+        val src = inputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        src.position(startPosition)
+        src.limit(startPosition + safeBytes)
+        val out = replaceOutputBuffer(safeBytes).order(ByteOrder.LITTLE_ENDIAN)
+        out.put(src)
+        out.flip()
+        inputBuffer.position(inputBuffer.limit())
     }
 
     /** Decode any supported PCM encoding and fold multichannel content down to stereo. */

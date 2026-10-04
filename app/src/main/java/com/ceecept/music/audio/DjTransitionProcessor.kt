@@ -141,27 +141,29 @@ class DjTransitionProcessor : BaseAudioProcessor() {
     }
 
     private fun incomingGain(p: Float): Float = when (transitionType) {
-        TYPE_LONG_BLEND -> 0.70f + 0.30f * ease(p)
-        TYPE_MEDIUM_BLEND -> 0.76f + 0.24f * ease(p)
-        TYPE_SHORT_BLEND -> 0.88f + 0.12f * ease(p)
-        TYPE_DROP_MIX, TYPE_ECHO_COLD -> if (p < 0.18f) 0.92f else 1f
-        else -> 0.84f + 0.16f * ease(p)
+        TYPE_LONG_BLEND -> 0.58f + 0.42f * ease(p)
+        TYPE_MEDIUM_BLEND -> 0.62f + 0.38f * ease(p)
+        TYPE_SHORT_BLEND -> 0.72f + 0.28f * ease(p)
+        TYPE_DROP_MIX, TYPE_ECHO_COLD -> 0.80f + 0.20f * ease(p)
+        else -> 0.68f + 0.32f * ease(p)
     }
 
     private fun outgoingGain(p: Float): Float = when (transitionType) {
-        TYPE_LONG_BLEND -> 1f - 0.20f * ease(p)
-        TYPE_MEDIUM_BLEND -> 1f - 0.28f * ease(p)
-        TYPE_SHORT_BLEND -> 1f - 0.42f * ease(p)
-        TYPE_DROP_MIX -> 1f - 0.70f * ease(p)
-        TYPE_ECHO_COLD -> 1f - 0.86f * ease(p)
-        else -> 1f - 0.30f * ease(p)
+        TYPE_LONG_BLEND -> 1f - 0.44f * ease(p)
+        TYPE_MEDIUM_BLEND -> 1f - 0.56f * ease(p)
+        TYPE_SHORT_BLEND -> 1f - 0.68f * ease(p)
+        TYPE_DROP_MIX -> 1f - 0.82f * ease(p)
+        TYPE_ECHO_COLD -> 1f - 0.90f * ease(p)
+        else -> 1f - 0.52f * ease(p)
     }
 
     private fun echoAmount(p: Float): Float = when (transitionType) {
-        TYPE_DROP_MIX -> ((p - 0.45f) / 0.55f).coerceIn(0f, 1f)
-        TYPE_ECHO_COLD -> ((p - 0.30f) / 0.70f).coerceIn(0f, 1f)
-        TYPE_SHORT_BLEND -> ((p - 0.72f) / 0.28f).coerceIn(0f, 1f) * 0.55f
-        else -> ((p - 0.82f) / 0.18f).coerceIn(0f, 1f) * 0.28f
+        TYPE_DROP_MIX -> ((p - 0.22f) / 0.78f).coerceIn(0f, 1f)
+        TYPE_ECHO_COLD -> ((p - 0.16f) / 0.84f).coerceIn(0f, 1f)
+        TYPE_SHORT_BLEND -> ((p - 0.46f) / 0.54f).coerceIn(0f, 1f) * 0.62f
+        TYPE_MEDIUM_BLEND -> ((p - 0.58f) / 0.42f).coerceIn(0f, 1f) * 0.40f
+        TYPE_LONG_BLEND -> ((p - 0.70f) / 0.30f).coerceIn(0f, 1f) * 0.28f
+        else -> ((p - 0.60f) / 0.40f).coerceIn(0f, 1f) * 0.34f
     }
 
     private fun configureFilters(force: Boolean) {
@@ -190,42 +192,49 @@ class DjTransitionProcessor : BaseAudioProcessor() {
     private fun configureIntro(type: Int, p: Float) {
         val opened = ease(p)
         val hpStart = when (type) {
-            TYPE_LONG_BLEND -> 260f
-            TYPE_MEDIUM_BLEND -> 360f
-            TYPE_SHORT_BLEND -> 620f
-            TYPE_DROP_MIX, TYPE_ECHO_COLD -> 90f
-            else -> 420f
+            TYPE_LONG_BLEND -> 110f
+            TYPE_MEDIUM_BLEND -> 150f
+            TYPE_SHORT_BLEND -> 260f
+            TYPE_DROP_MIX, TYPE_ECHO_COLD -> 42f
+            else -> 180f
         }
-        val hpHz = hpStart * (1f - opened) + 24f * opened
-        hp.setHighPass(hpHz, 0.82f, sampleRate)
-        lp.setLowPass(19_000f, 0.7071f, sampleRate)
-        presence.setIdentity()
+        val hpHz = hpStart * (1f - opened) + 22f * opened
+        hp.setHighPass(hpHz, 0.74f, sampleRate)
+        lp.setLowPass(19_500f, 0.7071f, sampleRate)
+        val lift = when (type) {
+            TYPE_DROP_MIX, TYPE_ECHO_COLD -> 1.8f * (1f - opened)
+            TYPE_SHORT_BLEND -> 1.1f * (1f - opened)
+            else -> 0.6f * (1f - opened)
+        }
+        if (lift <= 0.05f) presence.setIdentity() else presence.setPeaking(2_400f, 0.85f, lift, sampleRate)
     }
 
     private fun configureOutro(type: Int, p: Float) {
         val e = ease(p)
         val hpHz = when (type) {
-            TYPE_LONG_BLEND -> if (p < 0.48f) 24f else 24f + 520f * ((p - 0.48f) / 0.52f)
-            TYPE_MEDIUM_BLEND -> 26f + 920f * e
-            TYPE_SHORT_BLEND -> 40f + 1_900f * e
-            TYPE_DROP_MIX -> 90f + 3_200f * e
-            TYPE_ECHO_COLD -> 180f + 4_800f * e
-            else -> 28f + 850f * e
+            TYPE_LONG_BLEND -> if (p < 0.34f) 24f else 24f + 820f * ((p - 0.34f) / 0.66f)
+            TYPE_MEDIUM_BLEND -> 28f + 1_350f * e
+            TYPE_SHORT_BLEND -> 44f + 2_450f * e
+            TYPE_DROP_MIX -> 90f + 3_900f * e
+            TYPE_ECHO_COLD -> 160f + 5_400f * e
+            else -> 28f + 1_100f * e
         }
         val lpHz = when (type) {
-            TYPE_ECHO_COLD -> 12_000f - 4_200f * e
-            TYPE_DROP_MIX -> 14_000f - 5_500f * e
-            TYPE_SHORT_BLEND -> 18_000f - 7_000f * e
-            else -> 19_000f - 4_500f * e
+            TYPE_ECHO_COLD -> 12_000f - 5_300f * e
+            TYPE_DROP_MIX -> 14_000f - 6_800f * e
+            TYPE_SHORT_BLEND -> 18_000f - 8_000f * e
+            TYPE_MEDIUM_BLEND -> 19_000f - 5_800f * e
+            else -> 19_000f - 4_900f * e
         }
         hp.setHighPass(hpHz, if (type >= TYPE_DROP_MIX) 1.35f else 0.82f, sampleRate)
         lp.setLowPass(max(4_500f, lpHz), 0.7071f, sampleRate)
         // Mid/vocal duck for clashing-key or short transitions, matching the guideline's
         // "avoid two vocals fighting" rule using a gentle wide dip.
         val midDuck = when (type) {
-            TYPE_SHORT_BLEND -> -2.5f * e
-            TYPE_DROP_MIX -> -4.5f * e
-            TYPE_ECHO_COLD -> -5.5f * e
+            TYPE_MEDIUM_BLEND -> -1.6f * e
+            TYPE_SHORT_BLEND -> -3.2f * e
+            TYPE_DROP_MIX -> -5.2f * e
+            TYPE_ECHO_COLD -> -6.0f * e
             else -> 0f
         }
         if (midDuck == 0f) presence.setIdentity() else presence.setPeaking(1200f, 0.75f, midDuck, sampleRate)

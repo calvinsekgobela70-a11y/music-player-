@@ -21,6 +21,14 @@ No account. No ads. No internet permission — your music never leaves your phon
 > (each CI build is signed with a fresh debug key, so Android will otherwise block the update
 > with an "app not installed" signature error).
 
+## v1.0.18 lyrics, DJ handoff and crash fix
+
+This build focuses on what should be visible and audible on the phone:
+
+- **Apple Music-style synced lyrics:** the lyrics page now matches the supplied reference more closely: top glass now-playing strip, artwork/title/artist, large glassy bold lyric typography, bright active line, dim oversized surrounding lines, art-derived dark backdrop, smoother line progression, and stable timed-line auto-scroll/seek.
+- **DJ Mode handoff:** DJ Mode now performs stronger phrase-window handoffs instead of subtle edge high-pass only. Weak-analysis tracks use a real medium blend fallback, outgoing transitions are longer/stronger with echo/ducking, and the player auto-advances at the transition peak so the next song starts as part of the mix rather than after dead end silence.
+- **Recovered ExoPlayer.error(1004):** `SpatializerProcessor` now consumes frame-exact buffers and safely drops partial decoder/flush bytes on EMUI, preventing the `ByteBuffer.put` crash seen on Huawei JNY-LX1.
+
 ## v1.0.17 focused fix
 
 This build focuses only on the two regressions reported after v1.0.16:

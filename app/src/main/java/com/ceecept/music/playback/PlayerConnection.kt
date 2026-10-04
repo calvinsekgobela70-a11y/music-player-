@@ -73,6 +73,7 @@ class PlayerConnection(
     @Volatile private var lastDjWarmupAtMs = 0L
     @Volatile private var reorderAfterAnalysis = false
     @Volatile private var reorderInFlight = false
+    @Volatile private var djAutoAdvancedFromId = Long.MIN_VALUE
 
     private val _controller = MutableStateFlow<MediaController?>(null)
     val controller: StateFlow<MediaController?> = _controller.asStateFlow()
@@ -129,6 +130,7 @@ class PlayerConnection(
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            djAutoAdvancedFromId = Long.MIN_VALUE
             resolveCurrent(mediaItem)
             syncPosition()
             syncQueue(_controller.value)
@@ -312,13 +314,14 @@ class PlayerConnection(
         val bpm = a?.bpm ?: b?.bpm ?: 120f
         val beat = (a?.beatMs ?: (60_000f / bpm.coerceIn(70f, 190f)).toLong()).coerceIn(315L, 860L)
         if (a == null || b == null || !a.mixable || !b.mixable || a.confidence < 0.42f || b.confidence < 0.42f) {
-            val w = 8_000L.coerceAtMost(durationMs / 4).coerceAtLeast(5_000L)
+            val w = 14_000L.coerceAtMost((durationMs * 0.28f).toLong()).coerceAtLeast(7_000L)
+            val cue = a?.outroStartMs?.takeIf { it > 0L } ?: (durationMs - w)
             return DjTransitionPlan(
-                type = DjTransitionProcessor.TYPE_SIMPLE,
+                type = DjTransitionProcessor.TYPE_MEDIUM_BLEND,
                 windowMs = w,
-                mixOutMs = (durationMs - w).coerceAtLeast(0L),
+                mixOutMs = cue.coerceIn(0L, (durationMs - w / 2).coerceAtLeast(0L)),
                 bpm = bpm,
-                compatibility = 0.2f,
+                compatibility = 0.45f,
                 harmonic = false,
                 tempoDiff = 99f
             )
@@ -335,15 +338,15 @@ class PlayerConnection(
         val bars = when (type) {
             DjTransitionProcessor.TYPE_LONG_BLEND -> if (a.energy > 0.55f && b.energy > 0.55f) 16 else 12
             DjTransitionProcessor.TYPE_MEDIUM_BLEND -> 8
-            DjTransitionProcessor.TYPE_SHORT_BLEND -> 4
-            DjTransitionProcessor.TYPE_DROP_MIX -> 1
-            DjTransitionProcessor.TYPE_ECHO_COLD -> 1
+            DjTransitionProcessor.TYPE_SHORT_BLEND -> 6
+            DjTransitionProcessor.TYPE_DROP_MIX -> 2
+            DjTransitionProcessor.TYPE_ECHO_COLD -> 2
             else -> 4
         }
         val w = when (type) {
-            DjTransitionProcessor.TYPE_DROP_MIX -> (beat * 4L).coerceIn(1_200L, 3_800L)
-            DjTransitionProcessor.TYPE_ECHO_COLD -> (beat * 4L).coerceIn(1_200L, 4_500L)
-            else -> (beat * 4L * bars).coerceIn(5_000L, 38_000L)
+            DjTransitionProcessor.TYPE_DROP_MIX -> (beat * 8L).coerceIn(2_400L, 7_500L)
+            DjTransitionProcessor.TYPE_ECHO_COLD -> (beat * 8L).coerceIn(2_400L, 8_500L)
+            else -> (beat * 4L * bars).coerceIn(7_000L, 42_000L)
         }.coerceAtMost((durationMs * 0.32f).toLong().coerceAtLeast(4_000L))
         val cue = a.outroStartMs.takeIf { it > 0L } ?: a.outroCueMs.takeIf { it > 0L }
             ?: (durationMs - w)
@@ -394,8 +397,29 @@ class PlayerConnection(
             progress = progress,
             bpm = plan.bpm,
             type = plan.type,
-            overlapIntensity = if (mode == DjTransitionProcessor.MODE_NONE) 0f else plan.compatibility.coerceIn(0.15f, 1f)
+            overlapIntensity = if (mode == DjTransitionProcessor.MODE_NONE) 0f else plan.compatibility.coerceIn(0.25f, 1f)
         )
+        if (mode == DjTransitionProcessor.MODE_OUTRO && c.currentMediaItemIndex < c.mediaItemCount - 1) {
+            val currentId = c.currentMediaItem?.mediaId?.toLongOrNull() ?: Long.MIN_VALUE
+            val threshold = djAdvanceThreshold(plan.type)
+            if (currentId != Long.MIN_VALUE && currentId != djAutoAdvancedFromId && progress >= threshold) {
+                djAutoAdvancedFromId = currentId
+                // With a single Media3 player we cannot overlap two decoded songs, so
+                // Ceecept performs the DJ handoff at the phrase/echo peak instead of
+                // waiting for dead air at the physical end of the file.
+                c.seekToNextMediaItem()
+                c.play()
+            }
+        }
+    }
+
+    private fun djAdvanceThreshold(type: Int): Float = when (type) {
+        DjTransitionProcessor.TYPE_LONG_BLEND -> 0.92f
+        DjTransitionProcessor.TYPE_MEDIUM_BLEND -> 0.88f
+        DjTransitionProcessor.TYPE_SHORT_BLEND -> 0.82f
+        DjTransitionProcessor.TYPE_DROP_MIX -> 0.76f
+        DjTransitionProcessor.TYPE_ECHO_COLD -> 0.78f
+        else -> 0.86f
     }
 
     private fun clearDjAnalysisQueue() {
