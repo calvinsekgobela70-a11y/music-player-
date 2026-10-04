@@ -29,7 +29,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -62,6 +61,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -541,15 +541,52 @@ fun ArtworkView(
                     modifier = Modifier.matchParentSize()
                 )
             } else {
-                Icon(
-                    imageVector = Icons.Filled.MusicNote,
-                    contentDescription = null,
-                    tint = Color.White.copy(alpha = 0.55f),
-                    modifier = Modifier.size(28.dp)
-                )
+                GeneratedArtworkTile(track = track, modifier = Modifier.matchParentSize())
             }
         }
     }
+}
+
+@Composable
+private fun GeneratedArtworkTile(track: Track?, modifier: Modifier = Modifier) {
+    val seed = remember(track?.id, track?.title, track?.artist) {
+        "${track?.id ?: 0}:${track?.title.orEmpty()}:${track?.artist.orEmpty()}".hashCode()
+    }
+    val first = artColor(seed)
+    val second = artColor(seed * 31 + 0x6D2B79)
+    val third = artColor(seed * 17 + 0x2BB6FF)
+    val initials = remember(track?.title, track?.artist) {
+        val words = listOf(track?.title.orEmpty(), track?.artist.orEmpty())
+            .flatMap { it.split(' ', '-', '_', '.', '/', '\\') }
+            .mapNotNull { it.trim().firstOrNull()?.uppercaseChar()?.toString() }
+        words.take(2).joinToString("").ifBlank { "C" }
+    }
+    Box(
+        modifier = modifier.background(
+            Brush.linearGradient(listOf(first, second, third))
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.28f), Color.Transparent)))
+        )
+        Text(
+            text = initials,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Black,
+            color = Color.White.copy(alpha = 0.94f),
+            maxLines = 1
+        )
+    }
+}
+
+private fun artColor(seed: Int): Color {
+    val r = 90 + (seed ushr 16 and 0x7F)
+    val g = 70 + (seed ushr 8 and 0x7F)
+    val b = 110 + (seed and 0x7F)
+    return Color(r, g, b)
 }
 
 /** Gain-reduction meter: fills leftwards from 0 dB, springs smoothly. */

@@ -19,6 +19,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -77,6 +78,7 @@ class PlayerService : MediaSessionService() {
         val provider = DefaultMediaNotificationProvider.Builder(this)
             .setNotificationId(NOTIFICATION_ID)
             .setChannelId(NOTIFICATION_CHANNEL_ID)
+            .setChannelName(R.string.notif_channel_name)
             .build()
         provider.setSmallIcon(R.drawable.ic_stat_ceecept)
         setMediaNotificationProvider(provider)
@@ -147,9 +149,22 @@ class PlayerService : MediaSessionService() {
         )
         session = MediaSession.Builder(this, exo)
             .setSessionActivity(sessionActivity)
+            .setShowPlayButtonIfPlaybackIsSuppressed(true)
+            .setMediaButtonPreferences(notificationButtonPreferences())
             .build()
         addSession(session!!)
     }
+
+    private fun notificationButtonPreferences(): List<CommandButton> = listOf(
+        CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+            .setDisplayName("Previous")
+            .setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            .build(),
+        CommandButton.Builder(CommandButton.ICON_NEXT)
+            .setDisplayName("Next")
+            .setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            .build()
+    )
 
     private fun enrichNotificationArtwork(app: CeeceptApp, exo: ExoPlayer, item: MediaItem?) {
         val mediaItem = item ?: return

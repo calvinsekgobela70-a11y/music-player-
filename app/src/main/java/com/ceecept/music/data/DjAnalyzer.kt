@@ -82,9 +82,10 @@ private data class StructureResult(
  */
 class DjAnalyzer(private val context: Context) {
 
-    fun analyze(track: Track): DjTrackAnalysis {
-        val samples = decodeMono(track, sampleRate = ANALYSIS_SR, maxSeconds = 72)
-        if (samples.size < ANALYSIS_SR * 6) return fallback(track)
+    fun analyze(track: Track, shouldContinue: () -> Boolean = { true }): DjTrackAnalysis {
+        if (!shouldContinue()) return fallback(track)
+        val samples = decodeMono(track, sampleRate = ANALYSIS_SR, maxSeconds = 36, shouldContinue = shouldContinue)
+        if (!shouldContinue() || samples.size < ANALYSIS_SR * 6) return fallback(track)
 
         val tempo = estimateTempo(samples, ANALYSIS_SR)
         val keyResult = estimateKey(samples, ANALYSIS_SR)
@@ -151,8 +152,14 @@ class DjAnalyzer(private val context: Context) {
         )
     }
 
-    private fun decodeMono(track: Track, sampleRate: Int, maxSeconds: Int): FloatArray {
-        val out = FloatArrayList(sampleRate * min(maxSeconds, 45))
+    private fun decodeMono(
+        track: Track,
+        sampleRate: Int,
+        maxSeconds: Int,
+        shouldContinue: () -> Boolean
+    ): FloatArray {
+        if (!shouldContinue()) return FloatArray(0)
+        val out = FloatArrayList(sampleRate * min(maxSeconds, 24))
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         try {
@@ -189,7 +196,7 @@ class DjAnalyzer(private val context: Context) {
             var sawInputEnd = false
             var sawOutputEnd = false
             val info = MediaCodec.BufferInfo()
-            while (!sawOutputEnd && out.size < maxSamples) {
+            while (shouldContinue() && !sawOutputEnd && out.size < maxSamples) {
                 if (!sawInputEnd) {
                     val inIndex = codec.dequeueInputBuffer(5_000)
                     if (inIndex >= 0) {
@@ -220,7 +227,7 @@ class DjAnalyzer(private val context: Context) {
                             buffer.order(ByteOrder.LITTLE_ENDIAN)
                             buffer.position(info.offset)
                             buffer.limit(info.offset + info.size)
-                            while (buffer.remaining() >= ch * 2 && out.size < maxSamples) {
+                            while (shouldContinue() && buffer.remaining() >= ch * 2 && out.size < maxSamples) {
                                 var sum = 0f
                                 for (c in 0 until ch) sum += buffer.short / 32768f
                                 decim++

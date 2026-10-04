@@ -21,6 +21,15 @@ No account. No ads. No internet permission — your music never leaves your phon
 > (each CI build is signed with a fresh debug key, so Android will otherwise block the update
 > with an "app not installed" signature error).
 
+## v1.0.16 deep-fix pass
+
+This build specifically revisits the issues that remained after v1.0.15:
+
+- **AutoMix / DJ Mode:** analysis is now cancellation-safe and generation-scoped, starts after playback settles, analyzes a smaller near-queue window first, yields much longer between MediaCodec jobs while music is playing, and never caches cancelled fallback analysis. This keeps the full AutoMix feature active while avoiding the Huawei/EMUI decoder/CPU contention that made the app lag or jam when DJ Mode was switched on.
+- **Timed lyrics:** lyrics now open as their own full-screen Apple Music-style surface instead of a generic sheet, with centered automatic scrolling, larger active-line typography, art-derived animated background, inline progress scrubbing, like and transport controls.
+- **Library artwork:** song rows no longer expose the music-note placeholder while artwork loading/retry is running. They immediately show deterministic generated rounded-square covers and then crossfade to real embedded/folder/MediaStore artwork when available.
+- **Notification / lock screen:** Media3 is upgraded to the 1.9.x session stack, MediaSession metadata is richer, the notification channel/provider is named explicitly, artwork bytes are still injected into the current MediaItem, and previous/next player-command button preferences are advertised to controllers for cleaner Huawei/System UI rendering.
+
 ## Features
 
 | Area | Details |

@@ -80,6 +80,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -306,7 +308,24 @@ fun NowPlayingScreen(
 
         AnimatedVisibility(visible = feature != null, enter = fadeIn(tween(160)), exit = fadeOut(tween(140))) {
             val currentFeature = feature
-            if (currentFeature != null) {
+            if (currentFeature == NowFeature.LYRICS) {
+                AppleLyricsPage(
+                    palette = palette,
+                    result = lyrics,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    track = track,
+                    repository = app.repository,
+                    playing = isPlaying,
+                    liked = liked,
+                    onClose = { feature = null },
+                    onLike = { track?.let { app.history.toggleLike(it.id) } },
+                    onPrevious = { connection.previous() },
+                    onPlayPause = { connection.togglePlayPause() },
+                    onNext = { connection.next() },
+                    onSeek = { connection.seekTo(it) }
+                )
+            } else if (currentFeature != null) {
                 FeaturePageScaffold(
                     palette = palette,
                     title = when (currentFeature) {
@@ -324,12 +343,7 @@ fun NowPlayingScreen(
                         label = "nowFeature"
                     ) { page ->
                         when (page) {
-                            NowFeature.LYRICS -> AppleLyricsPage(
-                                result = lyrics,
-                                positionMs = positionMs,
-                                track = track,
-                                repository = app.repository
-                            )
+                            NowFeature.LYRICS -> Unit
                             NowFeature.QUEUE -> QueueFeaturePage(
                                 queue = queue,
                                 currentIndex = currentIndex,
@@ -531,131 +545,219 @@ private fun FeaturePageScaffold(
 
 @Composable
 private fun AppleLyricsPage(
+    palette: ArtworkPalette,
     result: LyricsResult?,
     positionMs: Long,
+    durationMs: Long,
     track: Track?,
-    repository: com.ceecept.music.data.MusicRepository
+    repository: com.ceecept.music.data.MusicRepository,
+    playing: Boolean,
+    liked: Boolean,
+    onClose: () -> Unit,
+    onLike: () -> Unit,
+    onPrevious: () -> Unit,
+    onPlayPause: () -> Unit,
+    onNext: () -> Unit,
+    onSeek: (Long) -> Unit
 ) {
-    if (result == null) {
-        EmptyFeature("No local lyrics found", "Put a matching .lrc or .txt next to this song and rescan.")
-        return
-    }
+    var scrubMs by remember { mutableStateOf<Long?>(null) }
+    val shownMs = scrubMs ?: positionMs
+    val progress = if (durationMs > 0) (shownMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
 
-    val lyricLines = remember(result) {
-        if (result.timed) {
-            result.lines.mapIndexedNotNull { index, line ->
-                line.text.trim().takeIf { it.isNotBlank() }?.let { index to it }
-            }
-        } else {
-            result.plainText.lines().mapIndexedNotNull { index, line ->
-                line.trim().takeIf { it.isNotBlank() }?.let { index to it }
-            }
-        }
-    }
-    if (lyricLines.isEmpty()) {
-        EmptyFeature("Lyrics file is empty", "Check the matching .lrc or .txt file and rescan.")
-        return
-    }
-
-    val activeIndex = remember(result, positionMs) {
-        if (!result.timed) -1 else result.lines.indexOfLast { it.timeMs <= positionMs }.coerceAtLeast(0)
-    }
-    val listState = rememberLazyListState()
-    LaunchedEffect(result, activeIndex) {
-        if (result.timed && activeIndex >= 0) {
-            val visibleIndex = lyricLines.indexOfFirst { it.first == activeIndex }.coerceAtLeast(0)
-            runCatching { listState.animateScrollToItem((visibleIndex - 2).coerceAtLeast(0)) }
-        }
-    }
-
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .glass(RoundedCornerShape(30.dp), strength = 0.40f)
-            .padding(14.dp)
+            .background(palette.dominant)
     ) {
-        Row(
+        ArtworkBackdrop(palette = palette, modifier = Modifier.fillMaxSize(), intensity = 1.15f)
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .glass(RoundedCornerShape(24.dp), strength = 0.52f)
-                .padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .fillMaxSize()
+                .background(
+                    androidx.compose.ui.graphics.Brush.verticalGradient(
+                        listOf(
+                            palette.dominant.copy(alpha = 0.58f),
+                            Color.Black.copy(alpha = 0.28f),
+                            Color.Black.copy(alpha = 0.70f)
+                        )
+                    )
+                )
+        )
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 12.dp)
         ) {
-            ArtworkView(track = track, repository = repository, modifier = Modifier.size(54.dp), cornerRadius = 13.dp, thumbSize = 256)
-            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text(track?.title ?: "Lyrics", style = MaterialTheme.typography.titleMedium, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    text = if (result.timed) "Timed lyrics · ${result.source}" else "Plain lyrics · ${result.source}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.58f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .clip(CircleShape)
-                    .background(if (result.timed) CeeceptColors.Accent.copy(alpha = 0.26f) else Color.White.copy(alpha = 0.12f))
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(if (result.timed) "AUTO" else "TEXT", style = MaterialTheme.typography.labelSmall, color = if (result.timed) CeeceptColors.Accent else Color.White.copy(alpha = 0.70f))
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            itemsIndexed(lyricLines, key = { _, item -> "${item.first}:${item.second}" }) { _, item ->
-                val index = item.first
-                val text = item.second
-                val active = result.timed && index == activeIndex
-                val distance = if (result.timed) kotlin.math.abs(index - activeIndex) else 0
-                val alpha by animateFloatAsState(
-                    targetValue = when {
-                        !result.timed -> 0.86f
-                        active -> 1f
-                        distance == 1 -> 0.56f
-                        distance == 2 -> 0.34f
-                        else -> 0.18f
-                    },
-                    animationSpec = tween(240),
-                    label = "lyricAlpha"
-                )
-                val scale by animateFloatAsState(
-                    targetValue = when {
-                        !result.timed -> 1f
-                        active -> 1.06f
-                        distance == 1 -> 0.99f
-                        else -> 0.94f
-                    },
-                    animationSpec = tween(240),
-                    label = "lyricScale"
-                )
-                val x by animateFloatAsState(
-                    targetValue = if (active) 0f else 14f,
-                    animationSpec = tween(240),
-                    label = "lyricSlide"
-                )
-                Text(
-                    text = text,
-                    style = if (active) MaterialTheme.typography.headlineLarge else if (result.timed) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
-                    color = Color.White.copy(alpha = alpha),
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                ArtworkView(track = track, repository = repository, modifier = Modifier.size(46.dp), cornerRadius = 13.dp, thumbSize = 256)
+                Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                    Text(
+                        text = track?.title ?: "Lyrics",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = track?.artist ?: if (result?.timed == true) "Timed lyrics" else "Local lyrics",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.64f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            scaleX = scale
-                            scaleY = scale
-                            translationX = x
+                        .clip(CircleShape)
+                        .background(if (result?.timed == true) CeeceptColors.Accent.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.12f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (result?.timed == true) "SYNC" else "TEXT",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (result?.timed == true) CeeceptColors.Accent else Color.White.copy(alpha = 0.72f)
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                PillIconButton(Icons.Filled.KeyboardArrowDown, Color.White.copy(alpha = 0.92f), "Close lyrics", onClose)
+            }
+
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (result == null) {
+                    EmptyFeature("No local lyrics found", "Put a matching .lrc or .txt next to this song and rescan.")
+                } else {
+                    val lyricLines = remember(result) {
+                        if (result.timed) {
+                            result.lines.mapIndexedNotNull { index, line ->
+                                line.text.trim().takeIf { it.isNotBlank() }?.let { index to it }
+                            }
+                        } else {
+                            result.plainText.lines().mapIndexedNotNull { index, line ->
+                                line.trim().takeIf { it.isNotBlank() }?.let { index to it }
+                            }
                         }
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(if (active) Color.White.copy(alpha = 0.07f) else Color.Transparent)
-                        .padding(horizontal = 18.dp, vertical = 10.dp)
+                    }
+                    if (lyricLines.isEmpty()) {
+                        EmptyFeature("Lyrics file is empty", "Check the matching .lrc or .txt file and rescan.")
+                    } else {
+                        val activeIndex = remember(result, positionMs) {
+                            if (!result.timed) -1 else result.lines.indexOfLast { it.timeMs <= positionMs }.coerceAtLeast(0)
+                        }
+                        val listState = rememberLazyListState()
+                        val centerOffset = with(LocalDensity.current) { 208.dp.roundToPx() }
+                        LaunchedEffect(result, activeIndex, lyricLines.size) {
+                            if (result.timed && activeIndex >= 0) {
+                                val visibleIndex = lyricLines.indexOfFirst { it.first == activeIndex }.coerceAtLeast(0)
+                                runCatching { listState.animateScrollToItem(visibleIndex, scrollOffset = -centerOffset) }
+                            }
+                        }
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(top = 160.dp, bottom = 190.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            itemsIndexed(lyricLines, key = { _, item -> "${item.first}:${item.second}" }) { _, item ->
+                                val index = item.first
+                                val text = item.second
+                                val active = result.timed && index == activeIndex
+                                val distance = if (result.timed) abs(index - activeIndex) else 0
+                                val alpha by animateFloatAsState(
+                                    targetValue = when {
+                                        !result.timed -> 0.86f
+                                        active -> 1f
+                                        distance == 1 -> 0.52f
+                                        distance == 2 -> 0.30f
+                                        else -> 0.16f
+                                    },
+                                    animationSpec = tween(260),
+                                    label = "lyricAlpha"
+                                )
+                                val scale by animateFloatAsState(
+                                    targetValue = when {
+                                        !result.timed -> 1f
+                                        active -> 1.08f
+                                        distance == 1 -> 0.98f
+                                        else -> 0.92f
+                                    },
+                                    animationSpec = tween(260),
+                                    label = "lyricScale"
+                                )
+                                val x by animateFloatAsState(
+                                    targetValue = if (active) 0f else 18f,
+                                    animationSpec = tween(260),
+                                    label = "lyricSlide"
+                                )
+                                Text(
+                                    text = text,
+                                    style = if (active) MaterialTheme.typography.displaySmall else if (result.timed) MaterialTheme.typography.headlineMedium else MaterialTheme.typography.titleLarge,
+                                    fontWeight = if (active) FontWeight.Black else FontWeight.Bold,
+                                    color = Color.White.copy(alpha = alpha),
+                                    maxLines = if (active) 4 else 3,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .graphicsLayer {
+                                            scaleX = scale
+                                            scaleY = scale
+                                            translationX = x
+                                        }
+                                        .clip(RoundedCornerShape(22.dp))
+                                        .background(if (active) Color.White.copy(alpha = 0.09f) else Color.Transparent)
+                                        .padding(horizontal = 18.dp, vertical = if (active) 14.dp else 9.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            CeeceptSlider(
+                value = progress,
+                onValueChange = { frac -> scrubMs = (frac * durationMs).toLong() },
+                onValueChangeFinished = {
+                    scrubMs?.let(onSeek)
+                    scrubMs = null
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(formatDuration(shownMs), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
+                Text(formatDuration(durationMs), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.72f))
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                PillIconButton(
+                    if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
+                    if (liked) CeeceptColors.Accent else Color.White.copy(alpha = 0.90f),
+                    "Like",
+                    onLike
                 )
+                BouncyIconButton(onClick = onPrevious, contentDescription = "Previous") {
+                    Icon(Icons.Filled.SkipPrevious, null, tint = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(10.dp).size(30.dp))
+                }
+                BouncyIconButton(onClick = onPlayPause, contentDescription = if (playing) "Pause" else "Play") {
+                    Box(
+                        modifier = Modifier
+                            .size(66.dp)
+                            .shadow(18.dp, CircleShape)
+                            .clip(CircleShape)
+                            .background(Color.White),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, null, tint = Color.Black, modifier = Modifier.size(34.dp))
+                    }
+                }
+                BouncyIconButton(onClick = onNext, contentDescription = "Next") {
+                    Icon(Icons.Filled.SkipNext, null, tint = Color.White.copy(alpha = 0.92f), modifier = Modifier.padding(10.dp).size(30.dp))
+                }
+                PillIconButton(Icons.Filled.AutoAwesome, CeeceptColors.Accent, "Timed lyrics", {})
             }
         }
     }

@@ -31,8 +31,9 @@ import kotlinx.coroutines.launch
 import java.util.ArrayDeque
 import java.util.Collections
 
-private const val DJ_ANALYSIS_PRIORITY_WINDOW = 14
-private const val DJ_REORDER_WINDOW = 24
+private const val DJ_ANALYSIS_PRIORITY_WINDOW = 5
+private const val DJ_REORDER_WINDOW = 10
+private const val DJ_WARMUP_THROTTLE_MS = 3_500L
 
 private data class DjTransitionPlan(
     val type: Int,
@@ -68,6 +69,8 @@ class PlayerConnection(
     private val pendingAnalysis = ArrayDeque<Track>()
     private val queuedAnalysisIds = mutableSetOf<Long>()
     @Volatile private var analysisWorkerActive = false
+    @Volatile private var analysisGeneration = 0
+    @Volatile private var lastDjWarmupAtMs = 0L
     @Volatile private var reorderAfterAnalysis = false
     @Volatile private var reorderInFlight = false
 
@@ -395,8 +398,26 @@ class PlayerConnection(
         )
     }
 
-    private fun warmDjAnalysis() {
+    private fun clearDjAnalysisQueue() {
+        synchronized(analysisLock) {
+            analysisGeneration++
+            pendingAnalysis.clear()
+            queuedAnalysisIds.clear()
+            reorderAfterAnalysis = false
+        }
+    }
+
+    private fun scheduleDjWarmup(delayMs: Long = 900L) {
+        mainHandler.postDelayed({
+            if (_djMode.value) warmDjAnalysis(force = true)
+        }, delayMs)
+    }
+
+    private fun warmDjAnalysis(force: Boolean = false) {
         if (!_djMode.value) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastDjWarmupAtMs < DJ_WARMUP_THROTTLE_MS) return
+        lastDjWarmupAtMs = now
         val c = _controller.value
         val start = c?.currentMediaItemIndex?.coerceAtLeast(0) ?: history.queueIndex.coerceAtLeast(0)
         val idsToWarm = buildList {
@@ -432,25 +453,28 @@ class PlayerConnection(
             }
         }
         if (shouldStartWorker) {
-            appScope.launch(Dispatchers.IO) { runAnalysisWorker() }
+            val generation = analysisGeneration
+            appScope.launch(Dispatchers.IO) { runAnalysisWorker(generation) }
         } else if (reorderWhenDone && !enqueuedAny) {
             mainHandler.post { reorderUpcomingQueueFromAnalyses() }
         }
     }
 
-    private suspend fun runAnalysisWorker() {
+    private suspend fun runAnalysisWorker(generation: Int) {
         runCatching { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND) }
         var analysedSinceReorder = 0
-        while (true) {
+        while (_djMode.value && generation == analysisGeneration) {
             val track = synchronized(analysisLock) { pendingAnalysis.pollFirst() } ?: break
             analysingIds.add(track.id)
             try {
-                val analysis = djAnalyzer.analyze(track)
-                history.saveDjAnalysis(analysis)
-                analysedSinceReorder++
-                if (analysedSinceReorder >= 2) {
-                    analysedSinceReorder = 0
-                    mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+                val analysis = djAnalyzer.analyze(track) { _djMode.value && generation == analysisGeneration }
+                if (_djMode.value && generation == analysisGeneration) {
+                    history.saveDjAnalysis(analysis)
+                    analysedSinceReorder++
+                    if (analysedSinceReorder >= 2) {
+                        analysedSinceReorder = 0
+                        mainHandler.post { reorderUpcomingQueueFromAnalyses() }
+                    }
                 }
             } catch (e: Exception) {
                 com.ceecept.music.CrashReporter.recordSoft(appContext, "DjAnalyzer", e)
@@ -458,25 +482,27 @@ class PlayerConnection(
                 analysingIds.remove(track.id)
                 synchronized(analysisLock) { queuedAnalysisIds.remove(track.id) }
             }
+            if (!_djMode.value || generation != analysisGeneration) break
             // Keep playback responsive on Huawei/EMUI: yield between MediaCodec analyses
             // instead of hammering storage/CPU when AutoMix is switched on.
-            delay(if (_isPlaying.value) 180L else 70L)
+            delay(if (_isPlaying.value) 950L else 180L)
         }
         val shouldReorder = synchronized(analysisLock) {
             analysisWorkerActive = false
-            val r = reorderAfterAnalysis || analysedSinceReorder > 0
+            val r = _djMode.value && generation == analysisGeneration && (reorderAfterAnalysis || analysedSinceReorder > 0)
             reorderAfterAnalysis = false
             r
         }
         if (shouldReorder) mainHandler.post { reorderUpcomingQueueFromAnalyses() }
         var restart = false
+        val restartGeneration = analysisGeneration
         synchronized(analysisLock) {
-            if (!analysisWorkerActive && pendingAnalysis.isNotEmpty()) {
+            if (_djMode.value && !analysisWorkerActive && pendingAnalysis.isNotEmpty()) {
                 analysisWorkerActive = true
                 restart = true
             }
         }
-        if (restart) appScope.launch(Dispatchers.IO) { runAnalysisWorker() }
+        if (restart) appScope.launch(Dispatchers.IO) { runAnalysisWorker(restartGeneration) }
     }
 
     private fun reorderUpcomingQueueFromAnalyses() {
@@ -629,8 +655,8 @@ class PlayerConnection(
             c.play()
             syncQueue(c)
             if (_djMode.value) {
-                warmDjAnalysis()
-                reorderUpcomingQueueFromAnalyses()
+                scheduleDjWarmup(delayMs = 1_200L)
+                mainHandler.postDelayed({ if (_djMode.value) reorderUpcomingQueueFromAnalyses() }, 3_000L)
             }
         }
     }
@@ -639,12 +665,17 @@ class PlayerConnection(
         _djMode.value = enabled
         history.djMode = enabled
         if (!enabled) {
+            clearDjAnalysisQueue()
+            reorderInFlight = false
             engine.dj.setTransition(false, DjTransitionProcessor.MODE_NONE, 0f, 120f)
         } else {
+            clearDjAnalysisQueue()
             onMain { c ->
                 syncQueue(c)
-                warmDjAnalysis()
-                reorderUpcomingQueueFromAnalyses()
+                // Give playback and the UI a moment to settle before opening MediaCodec
+                // for analysis. This is the key anti-jam change for EMUI devices.
+                scheduleDjWarmup(delayMs = 1_400L)
+                mainHandler.postDelayed({ if (_djMode.value) reorderUpcomingQueueFromAnalyses() }, 3_200L)
             }
         }
     }
@@ -782,11 +813,15 @@ class PlayerConnection(
                 MediaMetadata.Builder()
                     .setTitle(title)
                     .setDisplayTitle(title)
+                    .setSubtitle(artist)
+                    .setDescription(listOf(artist, album).filter { it.isNotBlank() }.joinToString(" • "))
                     .setArtist(artist)
                     .setAlbumTitle(album)
                     .setAlbumArtist(albumArtist.ifBlank { artist })
                     .setArtworkUri(artUri)
                     .setTrackNumber(trackNumber)
+                    .setIsBrowsable(false)
+                    .setIsPlayable(true)
                     .build()
             )
             .build()
