@@ -283,13 +283,33 @@ class MusicRepository(
      * If the song truly has no embedded/folder/provider artwork, Ceecept returns a
      * deterministic generated cover instead of leaving the list visually blank.
      */
-    suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? {
+    suspend fun artwork(track: Track, sizePx: Int = 512): Bitmap? =
+        artworkInternal(track = track, sizePx = sizePx, allowGeneratedFallback = true, respectMissThrottle = true)
+
+    /**
+     * Real embedded/folder/MediaStore artwork only.
+     *
+     * Song-list rows use this so a generated fallback is never mistaken for a real
+     * successful cover. That was the reason covers could be detected by the app but
+     * still stay visually stuck on generated placeholders in the library list.
+     */
+    suspend fun realArtwork(track: Track, sizePx: Int = 512): Bitmap? =
+        artworkInternal(track = track, sizePx = sizePx, allowGeneratedFallback = false, respectMissThrottle = false)
+
+    private suspend fun artworkInternal(
+        track: Track,
+        sizePx: Int,
+        allowGeneratedFallback: Boolean,
+        respectMissThrottle: Boolean
+    ): Bitmap? {
         val key = if (track.albumId > 0) track.albumId else -track.id
         artCache.get(key)?.let { return it }
-        synchronized(artMisses) {
-            val missedAt = artMisses[key]
-            if (missedAt != null && System.currentTimeMillis() - missedAt < missRetryMs) {
-                return generatedArtwork(track, sizePx)
+        if (respectMissThrottle) {
+            synchronized(artMisses) {
+                val missedAt = artMisses[key]
+                if (missedAt != null && System.currentTimeMillis() - missedAt < missRetryMs) {
+                    return if (allowGeneratedFallback) generatedArtwork(track, sizePx) else null
+                }
             }
         }
         return withContext(Dispatchers.IO) {
@@ -307,12 +327,12 @@ class MusicRepository(
                 synchronized(artMisses) { artMisses.remove(key) }
                 bmp
             } else {
-                if (sizePx >= 320) {
+                if (respectMissThrottle && sizePx >= 320) {
                     // Do not hit MediaStore/retrievers constantly for tracks that have no
                     // art. This expiry still allows EMUI provider warm-up to recover later.
                     synchronized(artMisses) { artMisses[key] = System.currentTimeMillis() }
                 }
-                generatedArtwork(track, sizePx)
+                if (allowGeneratedFallback) generatedArtwork(track, sizePx) else null
             }
         }
     }

@@ -508,17 +508,20 @@ fun ArtworkView(
             // EMUI/MediaStore can fail the first art query while its provider warms up.
             // Retry a few times so song-list covers do not get stuck on placeholders.
             val sizes = listOf(thumbSize, 768, 512, 320).filter { it > 0 }.distinct()
-            repeat(5) { attempt ->
+            repeat(7) { attempt ->
                 var bmp: Bitmap? = null
                 for (size in sizes) {
-                    bmp = repository.artwork(track, size)
+                    // Important: only accept real artwork here. The composable already
+                    // draws an instant generated tile, so generated repository fallback
+                    // must not stop the retry loop before MediaStore/embedded covers land.
+                    bmp = repository.realArtwork(track, size)
                     if (bmp != null) break
                 }
                 if (bmp != null) {
                     bitmap = bmp
                     return@LaunchedEffect
                 }
-                delay(450L + attempt * 350L)
+                delay(320L + attempt * 300L)
             }
         }
     }

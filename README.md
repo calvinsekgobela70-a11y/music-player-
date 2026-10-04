@@ -21,6 +21,13 @@ No account. No ads. No internet permission — your music never leaves your phon
 > (each CI build is signed with a fresh debug key, so Android will otherwise block the update
 > with an "app not installed" signature error).
 
+## v1.0.17 focused fix
+
+This build focuses only on the two regressions reported after v1.0.16:
+
+- **Music-list artwork:** the library rows now ask the repository for real embedded/folder/MediaStore artwork only, while the Compose tile draws its own generated fallback. This prevents generated fallback art from being treated as a successful load and blocking the real album cover from appearing in the song list.
+- **Timed lyrics:** the lyrics page now builds timing from only visible lyric lines, ignores blank timestamp lines for active-line matching, uses stable timed-line keys, removes the negative scroll offset that caused jumpy/wrong positioning, and lets timed lyric lines seek to their timestamp.
+
 ## v1.0.16 deep-fix pass
 
 This build specifically revisits the issues that remained after v1.0.15:
