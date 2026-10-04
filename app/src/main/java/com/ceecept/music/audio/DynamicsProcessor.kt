@@ -208,6 +208,12 @@ class DynamicsProcessor : BaseAudioProcessor() {
         }
 
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        if (!p.enabled && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+            val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
+            out.put(inputBuffer)
+            out.flip()
+            return
+        }
         if (scratch.size < frames * channels) scratch = FloatArray(frames * channels)
         val s = scratch
         var idx = 0

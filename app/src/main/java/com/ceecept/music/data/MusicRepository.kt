@@ -44,7 +44,7 @@ class MusicRepository(
      * cache would then show blank artwork until the app is restarted.
      */
     private val artMisses = mutableMapOf<Long, Long>()
-    private val missRetryMs = 20_000L
+    private val missRetryMs = 1_200L
 
     fun findById(id: Long): Track? = synchronized(byId) { byId[id] }
 
@@ -289,6 +289,7 @@ class MusicRepository(
                 ?: embeddedViaPath(track, sizePx)
                 ?: embeddedViaUri(track, sizePx)
                 ?: folderArt(track, sizePx)
+                ?: siblingArt(track, sizePx)
                 ?: audioThumbnail(track, sizePx)
             if (bmp != null) {
                 artCache.put(key, bmp)
@@ -384,8 +385,9 @@ class MusicRepository(
             null
         } else {
             val names = listOf(
-                "cover.jpg", "cover.png", "folder.jpg", "folder.png",
-                "album.jpg", "albumart.jpg", "front.jpg", "artwork.jpg", "Cover.jpg", "Folder.jpg"
+                "cover.jpg", "cover.png", "cover.jpeg", "folder.jpg", "folder.png", "folder.jpeg",
+                "album.jpg", "album.png", "albumart.jpg", "albumart.png", "front.jpg", "front.png",
+                "artwork.jpg", "artwork.png", "Cover.jpg", "Folder.jpg", ".folder.jpg", ".folder.png"
             )
             var found: Bitmap? = null
             for (n in names) {
@@ -399,6 +401,31 @@ class MusicRepository(
         }
     } catch (e: Exception) {
         null
+    }
+
+    /** Try another track from the same album/folder when MediaStore only exposes art on one file. */
+    private fun siblingArt(track: Track, sizePx: Int): Bitmap? {
+        return try {
+            val siblings = _tracks.value.asSequence()
+                .filter { it.id != track.id }
+                .filter {
+                    (track.albumId > 0 && it.albumId == track.albumId) ||
+                        (it.album.equals(track.album, ignoreCase = true) && it.artist.equals(track.artist, ignoreCase = true))
+                }
+                .take(6)
+                .toList()
+            for (s in siblings) {
+                val bmp = embeddedViaDescriptor(s, sizePx)
+                    ?: embeddedViaPath(s, sizePx)
+                    ?: embeddedViaUri(s, sizePx)
+                    ?: folderArt(s, sizePx)
+                    ?: audioThumbnail(s, sizePx)
+                if (bmp != null) return bmp
+            }
+            null
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** MediaProvider album thumbnail (fast, size-capped). API 29+ expects the Albums URI. */

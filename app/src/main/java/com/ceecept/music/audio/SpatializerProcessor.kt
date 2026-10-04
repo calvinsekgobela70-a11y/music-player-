@@ -218,6 +218,12 @@ class SpatializerProcessor : BaseAudioProcessor() {
         val inChannels = inFormat.channelCount
         val bytesPerFrame = inFormat.bytesPerFrame
         val remaining = inputBuffer.remaining()
+        if (!p.enabled && inChannels == 2 && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+            val out = replaceOutputBuffer(remaining).order(ByteOrder.LITTLE_ENDIAN)
+            out.put(inputBuffer)
+            out.flip()
+            return
+        }
         if (remaining == 0) return
         val frames = remaining / bytesPerFrame
         if (frames == 0) {

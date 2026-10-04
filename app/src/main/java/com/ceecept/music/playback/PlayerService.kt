@@ -1,5 +1,6 @@
 package com.ceecept.music.playback
 
+import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -91,7 +92,17 @@ class PlayerService : MediaSessionService() {
             }
         })
         player = exo
-        session = MediaSession.Builder(this, exo).build()
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+            ?: Intent(this, com.ceecept.music.MainActivity::class.java)
+        val sessionActivity = PendingIntent.getActivity(
+            this,
+            0,
+            launchIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        session = MediaSession.Builder(this, exo)
+            .setSessionActivity(sessionActivity)
+            .build()
         addSession(session!!)
     }
 

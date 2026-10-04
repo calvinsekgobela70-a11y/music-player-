@@ -90,6 +90,12 @@ class DjTransitionProcessor : BaseAudioProcessor() {
         val frames = inputBuffer.remaining() / inFormat.bytesPerFrame
         if (frames <= 0) return
         inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        if (!enabled || mode == MODE_NONE) {
+            val out = replaceOutputBuffer(inputBuffer.remaining()).order(ByteOrder.LITTLE_ENDIAN)
+            out.put(inputBuffer)
+            out.flip()
+            return
+        }
         if (scratch.size < frames * channels) scratch = FloatArray(frames * channels)
         val s = scratch
         var idx = 0

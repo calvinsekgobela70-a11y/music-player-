@@ -2,6 +2,7 @@ package com.ceecept.music.playback
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.ContentUris
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -96,6 +97,9 @@ class PlayerConnection(
     private val _queueSize = MutableStateFlow(0)
     val queueSize: StateFlow<Int> = _queueSize.asStateFlow()
 
+    private val _queueTracks = MutableStateFlow<List<Track>>(emptyList())
+    val queueTracks: StateFlow<List<Track>> = _queueTracks.asStateFlow()
+
     private val _sleepTimerEndMs = MutableStateFlow(0L)
     val sleepTimerEndMs: StateFlow<Long> = _sleepTimerEndMs.asStateFlow()
 
@@ -114,6 +118,7 @@ class PlayerConnection(
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             resolveCurrent(mediaItem)
             syncPosition()
+            syncQueue(_controller.value)
             mediaItem?.mediaId?.toLongOrNull()?.let { history.recordPlay(it) }
             warmDjAnalysis()
             persistState()
@@ -123,6 +128,7 @@ class PlayerConnection(
             val c = _controller.value
             _queueSize.value = c?.mediaItemCount ?: 0
             _currentIndex.value = c?.currentMediaItemIndex ?: 0
+            syncQueue(c)
             resolveCurrent(c?.currentMediaItem)
             syncPosition()
         }
@@ -190,6 +196,17 @@ class PlayerConnection(
         history.saveNowPlaying(id, c.currentPosition.coerceAtLeast(0), c.currentMediaItemIndex)
     }
 
+    private fun syncQueue(controller: MediaController?) {
+        val c = controller ?: return
+        val items = (0 until c.mediaItemCount).mapNotNull { i ->
+            runCatching { c.getMediaItemAt(i).mediaId.toLongOrNull() }.getOrNull()
+                ?.let { repository.findById(it) }
+        }
+        _queueTracks.value = items
+        _queueSize.value = c.mediaItemCount
+        _currentIndex.value = c.currentMediaItemIndex.coerceAtLeast(0)
+    }
+
     /** Store the queue itself, so "resume" brings back the whole listening session. */
     private fun persistQueue(tracks: List<Track>, index: Int) {
         history.queueIds = tracks.map { it.id }
@@ -213,6 +230,7 @@ class PlayerConnection(
         controller.shuffleModeEnabled = history.shuffle
         controller.repeatMode = history.repeatMode
         controller.prepare()
+        syncQueue(controller)
         restored = true
     }
 
@@ -230,6 +248,7 @@ class PlayerConnection(
         _shuffleOn.value = controller.shuffleModeEnabled
         _repeatMode.value = controller.repeatMode
         _queueSize.value = controller.mediaItemCount
+        syncQueue(controller)
         resolveCurrent(controller.currentMediaItem)
         syncPosition()
         // The library may not have finished scanning yet; retry shortly if so.
@@ -520,6 +539,7 @@ class PlayerConnection(
             c.seekToDefaultPosition(index)
             c.prepare()
             c.play()
+            syncQueue(c)
             warmDjAnalysis()
         }
     }
@@ -590,6 +610,38 @@ class PlayerConnection(
         onMain { it.seekTo(positionMs.coerceAtLeast(0)) }
     }
 
+    fun seekToQueueIndex(index: Int) {
+        onMain { c ->
+            if (index in 0 until c.mediaItemCount) {
+                c.seekToDefaultPosition(index)
+                c.prepare()
+                c.play()
+                syncQueue(c)
+            }
+        }
+    }
+
+    fun removeQueueItem(index: Int) {
+        onMain { c ->
+            if (index in 0 until c.mediaItemCount && c.mediaItemCount > 1) {
+                c.removeMediaItem(index)
+                syncQueue(c)
+                persistQueue(_queueTracks.value, c.currentMediaItemIndex.coerceAtLeast(0))
+            }
+        }
+    }
+
+    fun clearQueueAfterCurrent() {
+        onMain { c ->
+            val current = c.currentMediaItemIndex
+            if (current >= 0 && c.mediaItemCount > current + 1) {
+                c.removeMediaItems(current + 1, c.mediaItemCount)
+                syncQueue(c)
+                persistQueue(_queueTracks.value, current)
+            }
+        }
+    }
+
     fun toggleShuffle() {
         onMain { c -> c.shuffleModeEnabled = !c.shuffleModeEnabled }
     }
@@ -622,16 +674,27 @@ class PlayerConnection(
         }
     }
 
-    private fun Track.toMediaItem(): MediaItem = MediaItem.Builder()
-        .setMediaId(id.toString())
-        .setUri(uri)
-        .setMediaMetadata(
-            MediaMetadata.Builder()
-                .setTitle(title)
-                .setArtist(artist)
-                .setAlbumTitle(album)
-                .setTrackNumber(trackNumber)
-                .build()
-        )
-        .build()
+    private fun Track.toMediaItem(): MediaItem {
+        val artUri = if (albumId > 0) {
+            @Suppress("DEPRECATION")
+            ContentUris.withAppendedId(Uri.parse("content://media/external/audio/albumart"), albumId)
+        } else {
+            uri
+        }
+        return MediaItem.Builder()
+            .setMediaId(id.toString())
+            .setUri(uri)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(title)
+                    .setDisplayTitle(title)
+                    .setArtist(artist)
+                    .setAlbumTitle(album)
+                    .setAlbumArtist(albumArtist.ifBlank { artist })
+                    .setArtworkUri(artUri)
+                    .setTrackNumber(trackNumber)
+                    .build()
+            )
+            .build()
+    }
 }
