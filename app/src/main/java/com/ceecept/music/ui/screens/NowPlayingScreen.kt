@@ -645,25 +645,30 @@ private fun AppleLyricsPage(
                 if (result == null) {
                     EmptyFeature("No local lyrics found", "Put a matching .lrc or .txt next to this song and rescan.")
                 } else {
-                    val lyricLines = remember(result) {
+                    val lyricLines = remember(result, durationMs) {
                         if (result.timed) {
                             result.lines.mapNotNull { line ->
                                 line.text.trim().takeIf { it.isNotBlank() }?.let { line.timeMs to it }
                             }
                         } else {
-                            result.plainText.lines().mapNotNull { line ->
-                                line.trim().takeIf { it.isNotBlank() }?.let { -1L to it }
+                            val plain = result.plainText.lines().mapNotNull { line ->
+                                line.trim().takeIf { it.isNotBlank() }
                             }
+                            val usableDuration = durationMs.takeIf { it > 20_000L } ?: (plain.size * 3_800L).coerceAtLeast(30_000L)
+                            val introPad = 2_000L
+                            val step = ((usableDuration - introPad * 2).coerceAtLeast(plain.size * 1_200L)) / plain.size.coerceAtLeast(1)
+                            plain.mapIndexed { index, line -> (introPad + index * step) to line }
                         }
                     }
+                    val lyricsAreTimed = result.timed || (lyricLines.size > 1 && durationMs > 0L)
                     if (lyricLines.isEmpty()) {
                         EmptyFeature("Lyrics file is empty", "Check the matching .lrc or .txt file and rescan.")
                     } else {
-                        val activeLineIndex = remember(result, lyricLines, positionMs) {
-                            if (!result.timed) -1 else lyricLines.indexOfLast { it.first <= positionMs }.coerceAtLeast(0)
+                        val activeLineIndex = remember(result, lyricLines, lyricsAreTimed, positionMs) {
+                            if (!lyricsAreTimed) -1 else lyricLines.indexOfLast { it.first <= positionMs }.coerceAtLeast(0)
                         }
-                        val activeProgress = remember(result, lyricLines, activeLineIndex, positionMs) {
-                            if (!result.timed || activeLineIndex !in lyricLines.indices) 0f else {
+                        val activeProgress = remember(result, lyricLines, lyricsAreTimed, activeLineIndex, positionMs) {
+                            if (!lyricsAreTimed || activeLineIndex !in lyricLines.indices) 0f else {
                                 val lineTime = lyricLines[activeLineIndex].first
                                 val nextTime = lyricLines.getOrNull(activeLineIndex + 1)?.first
                                     ?.takeIf { it > lineTime }
@@ -672,8 +677,8 @@ private fun AppleLyricsPage(
                             }
                         }
                         val listState = rememberLazyListState()
-                        LaunchedEffect(result.source, result.timed, activeLineIndex) {
-                            if (result.timed && activeLineIndex >= 0) {
+                        LaunchedEffect(result.source, lyricsAreTimed, activeLineIndex) {
+                            if (lyricsAreTimed && activeLineIndex >= 0) {
                                 // Place the active line in the same upper-third position as
                                 // Apple Music instead of hiding it near the bottom controls.
                                 runCatching { listState.animateScrollToItem((activeLineIndex - 1).coerceAtLeast(0)) }
@@ -686,11 +691,11 @@ private fun AppleLyricsPage(
                             verticalArrangement = Arrangement.spacedBy(30.dp)
                         ) {
                             itemsIndexed(lyricLines, key = { index, item -> "$index:${item.first}:${item.second}" }) { index, item ->
-                                val active = result.timed && index == activeLineIndex
-                                val distance = if (result.timed) abs(index - activeLineIndex) else 0
+                                val active = lyricsAreTimed && index == activeLineIndex
+                                val distance = if (lyricsAreTimed) abs(index - activeLineIndex) else 0
                                 val alpha by animateFloatAsState(
                                     targetValue = when {
-                                        !result.timed -> 0.86f
+                                        !lyricsAreTimed -> 0.86f
                                         active -> 1f
                                         distance == 1 -> 0.34f
                                         distance == 2 -> 0.22f
@@ -701,7 +706,7 @@ private fun AppleLyricsPage(
                                 )
                                 val scale by animateFloatAsState(
                                     targetValue = when {
-                                        !result.timed -> 1f
+                                        !lyricsAreTimed -> 1f
                                         active -> 1.035f + (1f - activeProgress) * 0.012f
                                         distance == 1 -> 0.985f
                                         else -> 0.96f
@@ -717,8 +722,8 @@ private fun AppleLyricsPage(
                                 Text(
                                     text = item.second,
                                     color = Color.White.copy(alpha = alpha),
-                                    fontSize = if (active) 44.sp else 39.sp,
-                                    lineHeight = if (active) 48.sp else 43.sp,
+                                    fontSize = if (active) 54.sp else 46.sp,
+                                    lineHeight = if (active) 59.sp else 51.sp,
                                     fontWeight = FontWeight.Black,
                                     maxLines = if (active) 4 else 3,
                                     overflow = TextOverflow.Ellipsis,
@@ -737,7 +742,7 @@ private fun AppleLyricsPage(
                                             scaleY = scale
                                             translationY = y
                                         }
-                                        .then(if (result.timed) Modifier.clickable { onSeek(item.first.coerceAtLeast(0L)) } else Modifier)
+                                        .then(if (lyricsAreTimed) Modifier.clickable { onSeek(item.first.coerceAtLeast(0L)) } else Modifier)
                                         .padding(horizontal = 4.dp, vertical = 2.dp)
                                 )
                             }

@@ -37,6 +37,7 @@ class DjTransitionProcessor : BaseAudioProcessor() {
     @Volatile private var bpm: Float = 120f
     @Volatile private var transitionType: Int = TYPE_SIMPLE
     @Volatile private var overlapIntensity: Float = 0f
+    @Volatile private var preserveEchoTailOnFlush: Boolean = false
 
     private var channels = 2
     private var sampleRate = 48000
@@ -67,6 +68,9 @@ class DjTransitionProcessor : BaseAudioProcessor() {
         this.bpm = bpm.coerceIn(70f, 190f)
         this.transitionType = type.coerceIn(TYPE_SIMPLE, TYPE_ECHO_COLD)
         this.overlapIntensity = overlapIntensity.coerceIn(0f, 1f)
+        if (enabled && this.mode == MODE_OUTRO && this.progress >= 0.55f && this.transitionType != TYPE_SIMPLE) {
+            preserveEchoTailOnFlush = true
+        }
     }
 
     @Throws(AudioProcessor.UnhandledAudioFormatException::class)
@@ -246,8 +250,22 @@ class DjTransitionProcessor : BaseAudioProcessor() {
         hpStates.forEach { it.clear() }
         lpStates.forEach { it.clear() }
         presenceStates.forEach { it.clear() }
-        echoLines.forEach { it.clear() }
+        if (!preserveEchoTailOnFlush) {
+            echoLines.forEach { it.clear() }
+        } else {
+            // During an AutoMix handoff ExoPlayer flushes the audio sink when moving to
+            // the next media item. Keep the beat-synced outgoing echo in the delay
+            // lines so the next song starts under an audible DJ tail instead of a hard
+            // cut that sounds unchanged to the listener.
+            preserveEchoTailOnFlush = false
+        }
     }
 
-    override fun onReset() = onFlush()
+    override fun onReset() {
+        preserveEchoTailOnFlush = false
+        hpStates.forEach { it.clear() }
+        lpStates.forEach { it.clear() }
+        presenceStates.forEach { it.clear() }
+        echoLines.forEach { it.clear() }
+    }
 }

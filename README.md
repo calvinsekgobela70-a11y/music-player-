@@ -21,6 +21,14 @@ No account. No ads. No internet permission — your music never leaves your phon
 > (each CI build is signed with a fresh debug key, so Android will otherwise block the update
 > with an "app not installed" signature error).
 
+## v1.0.19 visible lyrics and audible AutoMix follow-up
+
+This build addresses the “nothing changed” feedback directly:
+
+- **Lyrics visibly move even without LRC timestamps:** plain `.txt` lyrics are now automatically time-distributed across the song duration, so the page still scrolls line-by-line like Apple Music while real `.lrc` files keep exact timestamps.
+- **Bigger reference-style lyrics:** active lyrics are larger again, with oversized dim upcoming lines so the screen resembles the supplied Apple Music reference more clearly.
+- **Audible DJ handoff tail:** AutoMix now preserves the outgoing beat-synced echo tail across ExoPlayer’s next-track flush, so the next song starts under a DJ tail instead of sounding like a hard unchanged skip.
+
 ## v1.0.18 lyrics, DJ handoff and crash fix
 
 This build focuses on what should be visible and audible on the phone:
