@@ -418,6 +418,7 @@ private fun LibraryRoot(
                             artists = app.repository.artists().filter {
                                 it.name.contains(query, ignoreCase = true)
                             },
+                            app = app,
                             onArtist = onArtist
                         )
                         4 -> AlbumGrid(
@@ -430,20 +431,24 @@ private fun LibraryRoot(
                         )
                         5 -> FolderList(
                             folders = folders,
+                            app = app,
                             onFolder = { folder ->
                                 if (folder.tracks.isNotEmpty()) app.playerConnection.playQueue(folder.tracks, 0)
                             }
                         )
                         6 -> GenreList(
                             genres = app.repository.genres().filter { it.name.contains(query, ignoreCase = true) },
+                            app = app,
                             onGenre = onGenre
                         )
                         7 -> ComposerList(
                             composers = app.repository.composers().filter { it.name.contains(query, ignoreCase = true) },
+                            app = app,
                             onComposer = onComposer
                         )
                         else -> YearList(
                             years = app.repository.years().filter { query.isBlank() || it.year.toString().contains(query) },
+                            app = app,
                             onYear = onYear
                         )
                     }
@@ -772,9 +777,12 @@ private fun PlaylistList(
             }
         } else {
             items(names, key = { it }) { name ->
+                val ids = app.history.playlistIds(name)
                 PlaylistRow(
+                    app = app,
                     name = name,
-                    count = app.history.playlistIds(name).size,
+                    count = ids.size,
+                    sample = app.repository.findAll(ids.take(1)).firstOrNull(),
                     onClick = { onPlaylist(name) },
                     onDelete = { app.history.deletePlaylist(name) }
                 )
@@ -809,8 +817,10 @@ private fun EmptyPlaylistMessage() {
 
 @Composable
 private fun PlaylistRow(
+    app: CeeceptApp,
     name: String,
     count: Int,
+    sample: Track?,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -823,15 +833,13 @@ private fun PlaylistRow(
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(CeeceptColors.accentGradient()),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.Filled.PlaylistPlay, contentDescription = null, tint = Color.White)
-        }
+        ArtworkView(
+            track = sample,
+            repository = app.repository,
+            modifier = Modifier.size(52.dp),
+            cornerRadius = 16.dp,
+            thumbSize = 256
+        )
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -877,16 +885,15 @@ private fun PlaylistDetail(app: CeeceptApp, name: String, onBack: () -> Unit) {
                     modifier = Modifier.padding(8.dp).size(24.dp)
                 )
             }
-            Box(
+            ArtworkView(
+                track = tracks.firstOrNull(),
+                repository = app.repository,
                 modifier = Modifier
                     .padding(8.dp)
-                    .size(72.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(CeeceptColors.accentGradient()),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(Icons.Filled.PlaylistPlay, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
-            }
+                    .size(72.dp),
+                cornerRadius = 20.dp,
+                thumbSize = 512
+            )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = name,
@@ -915,7 +922,6 @@ private fun PlaylistDetail(app: CeeceptApp, name: String, onBack: () -> Unit) {
             onShuffle = {
                 if (tracks.isNotEmpty()) {
                     app.playerConnection.playQueue(tracks.shuffled(), 0)
-                    if (!isPlaying) app.playerConnection.togglePlayPause()
                 }
             }
         )
@@ -937,7 +943,7 @@ private data class FolderEntry(
 private fun folderPathOf(track: Track): String = track.filePath.substringBeforeLast('/', missingDelimiterValue = "")
 
 @Composable
-private fun FolderList(folders: List<FolderEntry>, onFolder: (FolderEntry) -> Unit) {
+private fun FolderList(folders: List<FolderEntry>, app: CeeceptApp, onFolder: (FolderEntry) -> Unit) {
     LazyColumn(
         contentPadding = PaddingValues(bottom = 24.dp),
         modifier = Modifier.fillMaxSize()
@@ -950,20 +956,13 @@ private fun FolderList(folders: List<FolderEntry>, onFolder: (FolderEntry) -> Un
                     .padding(horizontal = 20.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(CeeceptColors.accentGradient()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Folder,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(28.dp)
-                    )
-                }
+                ArtworkView(
+                    track = folder.tracks.firstOrNull(),
+                    repository = app.repository,
+                    modifier = Modifier.size(52.dp),
+                    cornerRadius = 14.dp,
+                    thumbSize = 256
+                )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -991,37 +990,40 @@ private fun FolderList(folders: List<FolderEntry>, onFolder: (FolderEntry) -> Un
 }
 
 @Composable
-private fun GenreList(genres: List<GenreEntry>, onGenre: (String) -> Unit) {
+private fun GenreList(genres: List<GenreEntry>, app: CeeceptApp, onGenre: (String) -> Unit) {
     CategoryEntryList(
         entries = genres,
+        app = app,
         key = { it.name },
         title = { it.name },
         subtitle = { "${it.trackCount} songs" },
-        icon = Icons.Filled.AudioFile,
+        sample = { it.sample },
         onClick = { onGenre(it.name) }
     )
 }
 
 @Composable
-private fun ComposerList(composers: List<ComposerEntry>, onComposer: (String) -> Unit) {
+private fun ComposerList(composers: List<ComposerEntry>, app: CeeceptApp, onComposer: (String) -> Unit) {
     CategoryEntryList(
         entries = composers,
+        app = app,
         key = { it.name },
         title = { it.name },
         subtitle = { "${it.trackCount} songs" },
-        icon = Icons.Filled.Person,
+        sample = { it.sample },
         onClick = { onComposer(it.name) }
     )
 }
 
 @Composable
-private fun YearList(years: List<YearEntry>, onYear: (Int) -> Unit) {
+private fun YearList(years: List<YearEntry>, app: CeeceptApp, onYear: (Int) -> Unit) {
     CategoryEntryList(
         entries = years,
+        app = app,
         key = { it.year.toString() },
         title = { it.year.toString() },
         subtitle = { "${it.trackCount} songs" },
-        icon = Icons.Filled.LibraryMusic,
+        sample = { it.sample },
         onClick = { onYear(it.year) }
     )
 }
@@ -1029,10 +1031,11 @@ private fun YearList(years: List<YearEntry>, onYear: (Int) -> Unit) {
 @Composable
 private fun <T> CategoryEntryList(
     entries: List<T>,
+    app: CeeceptApp,
     key: (T) -> String,
     title: (T) -> String,
     subtitle: (T) -> String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    sample: (T) -> Track,
     onClick: (T) -> Unit
 ) {
     LazyColumn(
@@ -1047,15 +1050,13 @@ private fun <T> CategoryEntryList(
                     .padding(horizontal = 20.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(CeeceptColors.accentGradient()),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(26.dp))
-                }
+                ArtworkView(
+                    track = sample(entry),
+                    repository = app.repository,
+                    modifier = Modifier.size(52.dp),
+                    cornerRadius = 14.dp,
+                    thumbSize = 256
+                )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(title(entry), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1082,12 +1083,13 @@ private fun CategoryDetail(
             title = title,
             subtitle = "$subtitle · ${tracks.size} songs",
             icon = Icons.Filled.LibraryMusic,
+            app = app,
+            sample = tracks.firstOrNull(),
             onBack = onBack,
             onPlay = { if (tracks.isNotEmpty()) app.playerConnection.playQueue(tracks, 0) },
             onShuffle = {
                 if (tracks.isNotEmpty()) {
                     app.playerConnection.playQueue(tracks.shuffled(), 0)
-                    if (!isPlaying) app.playerConnection.togglePlayPause()
                 }
             }
         )
@@ -1096,7 +1098,7 @@ private fun CategoryDetail(
 }
 
 @Composable
-private fun ArtistList(artists: List<ArtistEntry>, onArtist: (String) -> Unit) {
+private fun ArtistList(artists: List<ArtistEntry>, app: CeeceptApp, onArtist: (String) -> Unit) {
     LazyColumn(
         contentPadding = PaddingValues(bottom = 24.dp),
         modifier = Modifier.fillMaxSize()
@@ -1109,24 +1111,13 @@ private fun ArtistList(artists: List<ArtistEntry>, onArtist: (String) -> Unit) {
                     .padding(horizontal = 20.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(
-                            androidx.compose.ui.graphics.Brush.linearGradient(
-                                listOf(CeeceptColors.Violet, CeeceptColors.AccentDeep)
-                            )
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Person,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
+                ArtworkView(
+                    track = artist.sample,
+                    repository = app.repository,
+                    modifier = Modifier.size(52.dp),
+                    cornerRadius = 14.dp,
+                    thumbSize = 256
+                )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -1211,12 +1202,13 @@ private fun ArtistDetail(
             title = name,
             subtitle = "${tracks.size} songs",
             icon = Icons.Filled.Person,
+            app = app,
+            sample = tracks.firstOrNull(),
             onBack = onBack,
             onPlay = { if (tracks.isNotEmpty()) app.playerConnection.playQueue(tracks, 0) },
             onShuffle = {
                 if (tracks.isNotEmpty()) {
                     app.playerConnection.playQueue(tracks.shuffled(), 0)
-                    if (!isPlaying) app.playerConnection.togglePlayPause()
                 }
             }
         )
@@ -1275,7 +1267,6 @@ private fun AlbumDetail(app: CeeceptApp, albumId: Long, onBack: () -> Unit) {
             onShuffle = {
                 if (tracks.isNotEmpty()) {
                     app.playerConnection.playQueue(tracks.shuffled(), 0)
-                    if (!isPlaying) app.playerConnection.togglePlayPause()
                 }
             }
         )
@@ -1288,6 +1279,8 @@ private fun DetailHeader(
     title: String,
     subtitle: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
+    app: CeeceptApp,
+    sample: Track?,
     onBack: () -> Unit,
     onPlay: () -> Unit,
     onShuffle: () -> Unit
@@ -1308,15 +1301,27 @@ private fun DetailHeader(
                         .size(24.dp)
                 )
             }
-            Box(
-                modifier = Modifier
-                    .padding(8.dp)
-                    .size(72.dp)
-                    .clip(CircleShape)
-                    .background(CeeceptColors.accentGradient()),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+            if (sample != null) {
+                ArtworkView(
+                    track = sample,
+                    repository = app.repository,
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .size(72.dp),
+                    cornerRadius = 20.dp,
+                    thumbSize = 512
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .padding(8.dp)
+                        .size(72.dp)
+                        .clip(CircleShape)
+                        .background(CeeceptColors.accentGradient()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(36.dp))
+                }
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(

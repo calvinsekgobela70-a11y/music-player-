@@ -34,6 +34,7 @@ class PlaybackHistory(context: Context) {
     private val bookmarks = LinkedHashMap<Long, MutableList<TrackBookmark>>()
     private val playlists = LinkedHashMap<String, MutableList<Long>>()
     private val djAnalyses = HashMap<Long, DjTrackAnalysis>()
+    private val lyricOffsets = HashMap<Long, Long>()
 
     private val _revision = mutableStateOf(0)
 
@@ -57,6 +58,7 @@ class PlaybackHistory(context: Context) {
         decodeBookmarks(prefs.getString(KEY_BOOKMARKS, "") ?: "")
         decodePlaylists(prefs.getString(KEY_PLAYLISTS, "") ?: "")
         decodeDjAnalyses(prefs.getString(KEY_DJ_ANALYSIS, "") ?: "")
+        decodeLyricOffsets(prefs.getString(KEY_LYRIC_OFFSETS, "") ?: "")
     }
 
     // ---------------------------------------------------------------- statistics
@@ -135,6 +137,41 @@ class PlaybackHistory(context: Context) {
             if (list.isEmpty()) bookmarks.remove(trackId)
             flushBookmarks()
             _revision.value = _revision.value + 1
+        }
+    }
+
+    // ------------------------------------------------------------- lyrics timing
+
+    fun lyricOffsetMs(trackId: Long): Long = lyricOffsets[trackId] ?: 0L
+
+    fun setLyricOffsetMs(trackId: Long, offsetMs: Long) {
+        if (trackId <= 0) return
+        val clean = offsetMs.coerceIn(-15_000L, 15_000L)
+        if (kotlin.math.abs(clean) < 50L) lyricOffsets.remove(trackId) else lyricOffsets[trackId] = clean
+        flushLyricOffsets()
+        _revision.value = _revision.value + 1
+    }
+
+    fun adjustLyricOffsetMs(trackId: Long, deltaMs: Long): Long {
+        val next = (lyricOffsetMs(trackId) + deltaMs).coerceIn(-15_000L, 15_000L)
+        setLyricOffsetMs(trackId, next)
+        return next
+    }
+
+    private fun flushLyricOffsets() {
+        val encoded = lyricOffsets.entries
+            .filter { kotlin.math.abs(it.value) >= 50L }
+            .take(500)
+            .joinToString(";") { "${it.key}:${it.value}" }
+        prefs.edit().putString(KEY_LYRIC_OFFSETS, encoded).apply()
+    }
+
+    private fun decodeLyricOffsets(encoded: String) {
+        encoded.split(';').forEach { row ->
+            val parts = row.split(':')
+            val id = parts.getOrNull(0)?.toLongOrNull() ?: return@forEach
+            val offset = parts.getOrNull(1)?.toLongOrNull()?.coerceIn(-15_000L, 15_000L) ?: return@forEach
+            if (kotlin.math.abs(offset) >= 50L) lyricOffsets[id] = offset
         }
     }
 
@@ -376,6 +413,14 @@ class PlaybackHistory(context: Context) {
         get() = prefs.getBoolean(KEY_GAPLESS_PRELOAD, true)
         set(value) = prefs.edit().putBoolean(KEY_GAPLESS_PRELOAD, value).apply()
 
+    var crossfadeEnabled: Boolean
+        get() = prefs.getBoolean(KEY_CROSSFADE_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_CROSSFADE_ENABLED, value).apply()
+
+    var crossfadeSeconds: Int
+        get() = prefs.getInt(KEY_CROSSFADE_SECONDS, 10).coerceIn(3, 24)
+        set(value) = prefs.edit().putInt(KEY_CROSSFADE_SECONDS, value.coerceIn(3, 24)).apply()
+
     /** Track ids of the queue that was playing, in order. */
     var queueIds: List<Long>
         get() = prefs.getString(KEY_QUEUE, "")?.split(',')
@@ -420,5 +465,8 @@ class PlaybackHistory(context: Context) {
         const val KEY_GAPLESS_PRELOAD = "gapless_preload"
         const val KEY_DJ_MODE = "dj_mode"
         const val KEY_DJ_ANALYSIS = "dj_analysis"
+        const val KEY_CROSSFADE_ENABLED = "crossfade_enabled"
+        const val KEY_CROSSFADE_SECONDS = "crossfade_seconds"
+        const val KEY_LYRIC_OFFSETS = "lyric_offsets"
     }
 }

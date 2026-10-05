@@ -115,8 +115,7 @@ fun SettingsScreen(app: CeeceptApp) {
         ActionRow(
             icon = Icons.Filled.AutoAwesome,
             title = "MilkDrop preset library",
-            subtitle = "${app.visualizerRepository.presets.size} uploaded-app presets imported for the adaptive background visualizer",
-            onClick = { }
+            subtitle = "${app.visualizerRepository.presets.size} uploaded-app presets imported for the adaptive background visualizer"
         )
 
         SectionHeader("Library scanner")
@@ -196,6 +195,8 @@ private fun PlaybackFeatureCard(app: CeeceptApp) {
     var keepNotification by remember { mutableStateOf(app.history.keepNotification) }
     var resumeHeadset by remember { mutableStateOf(app.history.resumeOnHeadset) }
     var gapless by remember { mutableStateOf(app.history.gaplessPreload) }
+    var crossfade by remember { mutableStateOf(app.history.crossfadeEnabled) }
+    var crossfadeSeconds by remember { mutableStateOf(app.history.crossfadeSeconds) }
     val sleepEnd by app.playerConnection.sleepTimerEndMs.collectAsStateWithLifecycle()
     val remaining = remember(sleepEnd) {
         val left = sleepEnd - System.currentTimeMillis()
@@ -238,6 +239,39 @@ private fun PlaybackFeatureCard(app: CeeceptApp) {
                     gapless = it
                     app.history.gaplessPreload = it
                 }
+            )
+            ToggleRow(
+                icon = Icons.Filled.AutoAwesome,
+                title = "Crossfade / DJ deck overlap",
+                subtitle = "Uses a second prepared deck with equal-power fade so AutoMix transitions are audibly seamless",
+                checked = crossfade,
+                onChange = {
+                    crossfade = it
+                    app.history.crossfadeEnabled = it
+                }
+            )
+            ActionRowInline(
+                icon = Icons.Filled.AutoAwesome,
+                title = "Fade length",
+                subtitle = "$crossfadeSeconds sec overlap · DJ mode stretches this to the nearest phrase when analysis is available",
+                actions = listOf(
+                    "6" to {
+                        crossfadeSeconds = 6
+                        app.history.crossfadeSeconds = 6
+                    },
+                    "10" to {
+                        crossfadeSeconds = 10
+                        app.history.crossfadeSeconds = 10
+                    },
+                    "14" to {
+                        crossfadeSeconds = 14
+                        app.history.crossfadeSeconds = 14
+                    },
+                    "20" to {
+                        crossfadeSeconds = 20
+                        app.history.crossfadeSeconds = 20
+                    }
+                )
             )
             ActionRowInline(
                 icon = Icons.Filled.Timer,
@@ -407,7 +441,7 @@ private fun SignalLine(label: String, value: String) {
 }
 
 @Composable
-private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClick: (() -> Unit)? = null) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         shape = RoundedCornerShape(18.dp),
@@ -417,7 +451,7 @@ private fun ActionRow(icon: ImageVector, title: String, subtitle: String, onClic
     ) {
         Row(
             modifier = Modifier
-                .clickable { onClick() }
+                .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

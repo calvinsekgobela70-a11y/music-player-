@@ -7,7 +7,14 @@ import java.text.Normalizer
 
 /** Offline/local lyrics matched like the uploaded app's library scanner: exact sidecar,
  * nested Lyrics folders, fuzzy folder scan, LRC/SRT/plain text parsing and timed output. */
-data class LyricsLine(val timeMs: Long, val text: String)
+data class LyricsWord(val timeMs: Long, val text: String)
+
+data class LyricsLine(
+    val timeMs: Long,
+    val text: String,
+    val endTimeMs: Long = -1L,
+    val words: List<LyricsWord> = emptyList()
+)
 
 data class LyricsResult(
     val source: String,
@@ -20,7 +27,7 @@ private data class LyricsCandidate(val file: File, val score: Int)
 
 class LyricsRepository {
     private val cache = LinkedHashMap<Long, LyricsResult?>()
-    private val extensions = setOf("lrc", "txt", "srt")
+    private val extensions = setOf("lrc", "txt", "srt", "vtt")
 
     suspend fun lyricsFor(track: Track): LyricsResult? = withContext(Dispatchers.IO) {
         synchronized(cache) { if (cache.containsKey(track.id)) return@withContext cache[track.id] }
@@ -112,8 +119,8 @@ class LyricsRepository {
         } ?: 0
         if (best <= 0) return null
         val extBoost = when (file.extension.lowercase()) {
-            "lrc" -> 22
-            "srt" -> 18
+            "lrc" -> 24
+            "srt", "vtt" -> 18
             else -> 6
         }
         val folderBoost = if (file.parentFile?.name?.contains("lyric", ignoreCase = true) == true ||
@@ -124,9 +131,9 @@ class LyricsRepository {
     private fun parse(file: File): LyricsResult? = try {
         val text = readTextFlexible(file)
         when (file.extension.lowercase()) {
-            "srt" -> parseSrt(file.name, text) ?: parseText(file.name, text)
+            "srt", "vtt" -> parseCueText(file.name, text) ?: parseText(file.name, text)
             "lrc" -> parseLrc(file.name, text) ?: parseText(file.name, text)
-            else -> parseLrc(file.name, text) ?: parseSrt(file.name, text) ?: parseText(file.name, text)
+            else -> parseLrc(file.name, text) ?: parseCueText(file.name, text) ?: parseText(file.name, text)
         }
     } catch (e: Exception) {
         null
@@ -144,41 +151,94 @@ class LyricsRepository {
             ?: 0L
         text.lineSequence().forEach { raw ->
             val matches = timeRegex.findAll(raw).toList()
+            val wordMatches = enhancedWordTimeRegex.findAll(raw).toList()
             val lyric = raw
                 .replace(timeRegex, "")
                 .replace(enhancedWordTimeRegex, "")
                 .replace(Regex("\\[[a-zA-Z]+:.*?]"), "")
+                .replace(Regex("\\s+"), " ")
                 .trim()
-            if (matches.isNotEmpty() && lyric.isNotBlank()) {
-                matches.forEach { m ->
-                    lines += LyricsLine((parseBracketTime(m.groupValues) + offsetMs).coerceAtLeast(0L), lyric)
+            if (lyric.isBlank()) return@forEach
+            val lineTimes = matches.map { parseBracketTime(it.groupValues) }
+                .ifEmpty { wordMatches.firstOrNull()?.let { listOf(parseBracketTime(it.groupValues)) } ?: emptyList() }
+            if (lineTimes.isNotEmpty()) {
+                val words = parseEnhancedWords(raw, offsetMs)
+                lineTimes.forEach { t ->
+                    lines += LyricsLine((t + offsetMs).coerceAtLeast(0L), lyric, words = words)
                 }
             }
         }
-        return if (lines.isNotEmpty()) {
-            val sorted = lines.sortedWith(compareBy<LyricsLine> { it.timeMs }.thenBy { it.text })
-            LyricsResult(source, timed = true, lines = sorted, plainText = sorted.joinToString("\n") { it.text })
-        } else null
+        return timedResult(source, lines)
     }
 
-    private fun parseSrt(source: String, text: String): LyricsResult? {
+    private fun parseEnhancedWords(raw: String, offsetMs: Long): List<LyricsWord> {
+        val wordRegex = Regex("<(?:(\\d{1,2}):)?(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>")
+        val matches = wordRegex.findAll(raw).toList()
+        if (matches.isEmpty()) return emptyList()
+        val out = ArrayList<LyricsWord>(matches.size)
+        for (i in matches.indices) {
+            val start = matches[i].range.last + 1
+            val end = matches.getOrNull(i + 1)?.range?.first ?: raw.length
+            val token = raw.substring(start, end)
+                .replace(wordRegex, "")
+                .replace(Regex("\\[[^]]+]"), "")
+                .trim()
+            if (token.isNotBlank()) {
+                out += LyricsWord((parseBracketTime(matches[i].groupValues) + offsetMs).coerceAtLeast(0L), token)
+            }
+        }
+        return out
+    }
+
+    private fun parseCueText(source: String, text: String): LyricsResult? {
+        val normalized = text.replace("\r\n", "\n").replace('\r', '\n')
         val blockRegex = Regex(
-            "(?ms)^\\s*(?:\\d+\\s*)?\\R?(\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3})\\s*-->\\s*(\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3}).*?\\R(.*?)(?=\\R\\s*\\R|\\z)"
+            "(?ms)^\\s*(?:\\d+\\s*)?\\n?((?:\\d{1,2}:)?\\d{1,2}:\\d{2}[,.]\\d{1,3})\\s*-->\\s*((?:\\d{1,2}:)?\\d{1,2}:\\d{2}[,.]\\d{1,3}).*?\\n(.*?)(?=\\n\\s*\\n|\\z)"
         )
-        val lines = blockRegex.findAll(text).mapNotNull { match ->
-            val time = parseSrtTime(match.groupValues[1])
+        val lines = blockRegex.findAll(normalized).mapNotNull { match ->
+            val start = parseCueTime(match.groupValues[1])
+            val end = parseCueTime(match.groupValues[2])
             val lyric = match.groupValues[3]
                 .lines()
                 .map { it.trim() }
-                .filter { it.isNotBlank() && !it.all(Char::isDigit) }
+                .filter { it.isNotBlank() && !it.all(Char::isDigit) && !it.startsWith("WEBVTT", ignoreCase = true) }
                 .joinToString(" ")
                 .replace(Regex("<[^>]+>"), "")
+                .replace(Regex("\\{[^}]+}"), "")
+                .replace(Regex("\\s+"), " ")
                 .trim()
-            lyric.takeIf { it.isNotBlank() }?.let { LyricsLine(time, it) }
+            lyric.takeIf { it.isNotBlank() }?.let { LyricsLine(start, it, endTimeMs = end) }
         }.toList()
-        return if (lines.isNotEmpty()) {
-            LyricsResult(source, timed = true, lines = lines.sortedBy { it.timeMs }, plainText = lines.joinToString("\n") { it.text })
-        } else null
+        return timedResult(source, lines)
+    }
+
+    private fun timedResult(source: String, rawLines: List<LyricsLine>): LyricsResult? {
+        if (rawLines.isEmpty()) return null
+        val sorted = rawLines
+            .filter { it.text.isNotBlank() }
+            .sortedWith(compareBy<LyricsLine> { it.timeMs }.thenBy { it.text })
+        if (sorted.isEmpty()) return null
+        val deduped = ArrayList<LyricsLine>(sorted.size)
+        for (line in sorted) {
+            val previous = deduped.lastOrNull()
+            if (previous != null && previous.timeMs == line.timeMs && previous.text == line.text) continue
+            deduped += line
+        }
+        val withEnds = deduped.mapIndexed { index, line ->
+            val nextStart = deduped.getOrNull(index + 1)?.timeMs
+            val end = when {
+                line.endTimeMs > line.timeMs -> line.endTimeMs
+                nextStart != null -> (nextStart - 80L).coerceAtLeast(line.timeMs + 500L)
+                else -> line.timeMs + estimateLineDuration(line.text)
+            }
+            line.copy(endTimeMs = end)
+        }
+        return LyricsResult(source, timed = true, lines = withEnds, plainText = withEnds.joinToString("\n") { it.text })
+    }
+
+    private fun estimateLineDuration(text: String): Long {
+        val words = text.split(Regex("\\s+")).count { it.isNotBlank() }.coerceAtLeast(1)
+        return (900L + words * 360L).coerceIn(1_400L, 6_500L)
     }
 
     private fun parseText(source: String, text: String): LyricsResult? {
@@ -208,12 +268,16 @@ class LyricsRepository {
         return hours * 3_600_000L + min * 60_000L + sec * 1000L + ms
     }
 
-    private fun parseSrtTime(value: String): Long {
-        val parts = value.replace(',', '.').split(':', '.')
-        val h = parts.getOrNull(0)?.toLongOrNull() ?: 0L
-        val m = parts.getOrNull(1)?.toLongOrNull() ?: 0L
-        val s = parts.getOrNull(2)?.toLongOrNull() ?: 0L
-        val ms = parts.getOrNull(3)?.padEnd(3, '0')?.take(3)?.toLongOrNull() ?: 0L
+    private fun parseCueTime(value: String): Long {
+        val parts = value.replace(',', '.').split(':')
+        val (h, m, secPart) = when (parts.size) {
+            3 -> Triple(parts[0].toLongOrNull() ?: 0L, parts[1].toLongOrNull() ?: 0L, parts[2])
+            2 -> Triple(0L, parts[0].toLongOrNull() ?: 0L, parts[1])
+            else -> Triple(0L, 0L, parts.lastOrNull() ?: "0")
+        }
+        val secPieces = secPart.split('.', limit = 2)
+        val s = secPieces.getOrNull(0)?.toLongOrNull() ?: 0L
+        val ms = secPieces.getOrNull(1)?.padEnd(3, '0')?.take(3)?.toLongOrNull() ?: 0L
         return h * 3_600_000L + m * 60_000L + s * 1000L + ms
     }
 

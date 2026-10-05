@@ -54,6 +54,8 @@ import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.AlertDialog
@@ -141,6 +143,8 @@ fun NowPlayingScreen(
     var lyrics by remember(track?.id) { mutableStateOf<LyricsResult?>(null) }
     val liked = remember(track?.id, historyRevision) { track?.let { app.history.isLiked(it.id) } ?: false }
     val bookmarks = remember(track?.id, historyRevision) { track?.let { app.history.bookmarksFor(it.id) } ?: emptyList() }
+    val rating = remember(track?.id, historyRevision) { track?.let { app.history.rating(it.id) } ?: 0 }
+    val lyricOffsetMs = remember(track?.id, historyRevision) { track?.let { app.history.lyricOffsetMs(it.id) } ?: 0L }
 
     LaunchedEffect(track?.id) {
         lyrics = track?.let { app.lyricsRepository.lyricsFor(it) }
@@ -328,7 +332,11 @@ fun NowPlayingScreen(
                                 result = lyrics,
                                 positionMs = positionMs,
                                 durationMs = durationMs,
-                                onSeek = { connection.seekTo(it) }
+                                lyricOffsetMs = lyricOffsetMs,
+                                onLyricsEarlier = { track?.let { app.history.adjustLyricOffsetMs(it.id, 250L) } },
+                                onLyricsLater = { track?.let { app.history.adjustLyricOffsetMs(it.id, -250L) } },
+                                onResetOffset = { track?.let { app.history.setLyricOffsetMs(it.id, 0L) } },
+                                onSeek = { connection.seekTo((it - lyricOffsetMs).coerceAtLeast(0L)) }
                             )
                             NowFeature.QUEUE -> QueueFeaturePage(
                                 queue = queue,
@@ -342,6 +350,8 @@ fun NowPlayingScreen(
                             NowFeature.MEMORY -> MemoryFeaturePage(
                                 bookmarks = bookmarks,
                                 positionMs = positionMs,
+                                rating = rating,
+                                onRate = { value -> track?.let { app.history.setRating(it.id, value) } },
                                 onBookmark = { track?.let { app.history.addBookmark(it.id, positionMs) } },
                                 onSeekBookmark = { connection.seekTo(it.positionMs) },
                                 onDeleteBookmark = { bookmark -> track?.let { app.history.removeBookmark(it.id, bookmark.positionMs) } },
@@ -534,6 +544,10 @@ private fun AppleLyricsPage(
     result: LyricsResult?,
     positionMs: Long,
     durationMs: Long,
+    lyricOffsetMs: Long,
+    onLyricsEarlier: () -> Unit,
+    onLyricsLater: () -> Unit,
+    onResetOffset: () -> Unit,
     onSeek: (Long) -> Unit
 ) {
     if (result == null) {
@@ -564,8 +578,9 @@ private fun AppleLyricsPage(
     }
 
     val lyricsAreTimed = result.timed || (durationMs > 0L && lyricLines.size > 1)
-    val activeIndex = remember(result, lyricLines, lyricsAreTimed, positionMs) {
-        if (!lyricsAreTimed) -1 else lyricLines.indexOfLast { it.first <= positionMs }.coerceAtLeast(0)
+    val syncedPositionMs = (positionMs + lyricOffsetMs).coerceAtLeast(0L)
+    val activeIndex = remember(result, lyricLines, lyricsAreTimed, syncedPositionMs) {
+        if (!lyricsAreTimed) -1 else lyricLines.indexOfLast { it.first <= syncedPositionMs }.coerceAtLeast(0)
     }
     val listState = rememberLazyListState()
     LaunchedEffect(result.source, lyricsAreTimed, activeIndex) {
@@ -586,12 +601,30 @@ private fun AppleLyricsPage(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             item(key = "source") {
-                Text(
-                    "Source · ${result.source}${if (!result.timed && lyricsAreTimed) " · auto-timed" else ""}",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = Color.White.copy(alpha = 0.58f),
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
+                Column(modifier = Modifier.padding(bottom = 4.dp)) {
+                    Text(
+                        "Source · ${result.source}${if (!result.timed && lyricsAreTimed) " · auto-timed" else ""}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White.copy(alpha = 0.58f)
+                    )
+                    if (lyricsAreTimed) {
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Sync ${formatSignedMs(lyricOffsetMs)}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = Color.White.copy(alpha = 0.72f),
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.10f))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                            TextButton(onClick = onLyricsLater) { Text("Later", color = Color.White.copy(alpha = 0.86f)) }
+                            TextButton(onClick = onLyricsEarlier) { Text("Earlier", color = CeeceptColors.Accent) }
+                            TextButton(onClick = onResetOffset) { Text("Reset", color = Color.White.copy(alpha = 0.68f)) }
+                        }
+                    }
+                }
             }
             itemsIndexed(lyricLines, key = { index, item -> "$index:${item.first}:${item.second}" }) { index, item ->
                 val text = item.second
@@ -637,6 +670,12 @@ private fun AppleLyricsPage(
             }
         }
     }
+}
+
+private fun formatSignedMs(value: Long): String = when {
+    value > 0 -> "+${value}ms"
+    value < 0 -> "${value}ms"
+    else -> "0ms"
 }
 
 @Composable
@@ -709,6 +748,8 @@ private fun TrackInfoPage(track: Track?) {
 private fun MemoryFeaturePage(
     bookmarks: List<TrackBookmark>,
     positionMs: Long,
+    rating: Int,
+    onRate: (Int) -> Unit,
     onBookmark: () -> Unit,
     onSeekBookmark: (TrackBookmark) -> Unit,
     onDeleteBookmark: (TrackBookmark) -> Unit,
@@ -728,6 +769,20 @@ private fun MemoryFeaturePage(
                 color = Color.White.copy(alpha = 0.68f)
             )
             Spacer(Modifier.height(14.dp))
+            Text("Rating", style = MaterialTheme.typography.labelMedium, color = Color.White.copy(alpha = 0.74f))
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
+                (1..5).forEach { value ->
+                    BouncyIconButton(onClick = { onRate(if (rating == value) 0 else value) }, contentDescription = "$value star rating") {
+                        Icon(
+                            imageVector = if (value <= rating) Icons.Filled.Star else Icons.Filled.StarBorder,
+                            contentDescription = null,
+                            tint = if (value <= rating) CeeceptColors.Accent else Color.White.copy(alpha = 0.58f),
+                            modifier = Modifier.padding(5.dp).size(22.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = onBookmark) { Text("Bookmark ${formatDuration(positionMs)}") }
                 Button(onClick = onAddToPlaylist) { Text("Playlist") }

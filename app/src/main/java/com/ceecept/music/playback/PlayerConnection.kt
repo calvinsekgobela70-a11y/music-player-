@@ -399,14 +399,13 @@ class PlayerConnection(
             type = plan.type,
             overlapIntensity = if (mode == DjTransitionProcessor.MODE_NONE) 0f else plan.compatibility.coerceIn(0.25f, 1f)
         )
-        if (mode == DjTransitionProcessor.MODE_OUTRO && c.currentMediaItemIndex < c.mediaItemCount - 1) {
+        if (mode == DjTransitionProcessor.MODE_OUTRO && c.currentMediaItemIndex < c.mediaItemCount - 1 && !history.crossfadeEnabled) {
             val currentId = c.currentMediaItem?.mediaId?.toLongOrNull() ?: Long.MIN_VALUE
             val threshold = djAdvanceThreshold(plan.type)
             if (currentId != Long.MIN_VALUE && currentId != djAutoAdvancedFromId && progress >= threshold) {
                 djAutoAdvancedFromId = currentId
-                // With a single Media3 player we cannot overlap two decoded songs, so
-                // Ceecept performs the DJ handoff at the phrase/echo peak instead of
-                // waiting for dead air at the physical end of the file.
+                // Fallback for users who disable the real dual-deck crossfade: keep the
+                // old phrase/echo handoff instead of waiting for silence at file end.
                 c.seekToNextMediaItem()
                 c.play()
             }
