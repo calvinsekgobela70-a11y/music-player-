@@ -203,46 +203,80 @@ class SpatializerProcessor : BaseAudioProcessor() {
     override fun queueInput(inputBuffer: ByteBuffer) {
         val inFormat = inputAudioFormat
         if (inFormat === AF.NOT_SET) return
-
-        val st = strategy.get()
-        if (appliedStrategy !== st) {
-            engine.setStrategy(st)
-            appliedStrategy = st
-        }
-        val p = params.get()
-        if (appliedParams !== p) {
-            engine.setScene(p.toScene())
-            appliedParams = p
-        }
-
-        val inChannels = inFormat.channelCount
-        val bytesPerFrame = inFormat.bytesPerFrame
         val startPosition = inputBuffer.position()
         val remaining = inputBuffer.remaining()
         if (remaining == 0) return
-        val frames = remaining / bytesPerFrame
+
+        try {
+            val st = strategy.get()
+            if (appliedStrategy !== st) {
+                engine.setStrategy(st)
+                appliedStrategy = st
+            }
+            val p = params.get()
+            if (appliedParams !== p) {
+                engine.setScene(p.toScene())
+                appliedParams = p
+            }
+
+            val inChannels = inFormat.channelCount
+            val bytesPerFrame = inFormat.bytesPerFrame
+            val frames = remaining / bytesPerFrame
+            val processBytes = frames * bytesPerFrame
+            if (frames == 0 || processBytes <= 0) {
+                inputBuffer.position(inputBuffer.limit())
+                return
+            }
+
+            if (!p.enabled && inChannels == 2 && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+                copyExactFrames(inputBuffer, startPosition, processBytes)
+                return
+            }
+
+            inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+            if (scratch.size < frames * 2) scratch = FloatArray(frames * 2)
+            val s = scratch
+
+            decodeToStereo(inputBuffer, inFormat, inChannels, frames, s)
+            // MediaCodec/AudioSink can occasionally hand a partial frame around flush or
+            // decoder-format changes on EMUI. Always consume it so the pipeline cannot
+            // re-enter with a dangling non-frame-aligned ByteBuffer and crash in put().
+            inputBuffer.position(inputBuffer.limit())
+            engine.process(s, frames)
+            writeOutput(s, frames)
+        } catch (t: Throwable) {
+            // Playback must never stop because a DSP processor received a malformed
+            // Huawei/Codec2 buffer. Fall back to an unprocessed stereo frame block for
+            // this buffer; if even that fails, consume it and emit no samples rather
+            // than propagating ExoPlayer.error(1004).
+            runCatching { bypassToStereo(inputBuffer, inFormat, startPosition, remaining) }
+                .getOrElse {
+                    inputBuffer.position(inputBuffer.limit())
+                    runCatching { replaceOutputBuffer(0).flip() }
+                    Unit
+                }
+        }
+    }
+
+    private fun bypassToStereo(inputBuffer: ByteBuffer, format: AF, startPosition: Int, byteCount: Int) {
+        val bytesPerFrame = format.bytesPerFrame
+        val frames = (byteCount / bytesPerFrame).coerceAtLeast(0)
         val processBytes = frames * bytesPerFrame
-        if (frames == 0 || processBytes <= 0) {
+        if (frames <= 0 || processBytes <= 0) {
             inputBuffer.position(inputBuffer.limit())
             return
         }
-
-        if (!p.enabled && inChannels == 2 && inFormat.encoding == C.ENCODING_PCM_FLOAT) {
+        if (format.channelCount == 2 && format.encoding == C.ENCODING_PCM_FLOAT) {
             copyExactFrames(inputBuffer, startPosition, processBytes)
             return
         }
-
-        inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
+        val src = inputBuffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
+        src.position(startPosition)
+        src.limit((startPosition + processBytes).coerceAtMost(inputBuffer.limit()))
         if (scratch.size < frames * 2) scratch = FloatArray(frames * 2)
-        val s = scratch
-
-        decodeToStereo(inputBuffer, inFormat, inChannels, frames, s)
-        // MediaCodec/AudioSink can occasionally hand a partial frame around flush or
-        // decoder-format changes on EMUI. Always consume it so the pipeline cannot
-        // re-enter with a dangling non-frame-aligned ByteBuffer and crash in put().
+        decodeToStereo(src, format, format.channelCount, frames, scratch)
         inputBuffer.position(inputBuffer.limit())
-        engine.process(s, frames)
-        writeOutput(s, frames)
+        writeOutput(scratch, frames)
     }
 
     private fun copyExactFrames(inputBuffer: ByteBuffer, startPosition: Int, byteCount: Int) {

@@ -5,7 +5,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.Normalizer
 
-/** Offline/local lyrics: sidecar .lrc/.txt files matched like the uploaded app's library. */
+/** Offline/local lyrics matched like the uploaded app's library scanner: exact sidecar,
+ * nested Lyrics folders, fuzzy folder scan, LRC/SRT/plain text parsing and timed output. */
 data class LyricsLine(val timeMs: Long, val text: String)
 
 data class LyricsResult(
@@ -15,8 +16,11 @@ data class LyricsResult(
     val plainText: String
 )
 
+private data class LyricsCandidate(val file: File, val score: Int)
+
 class LyricsRepository {
     private val cache = LinkedHashMap<Long, LyricsResult?>()
+    private val extensions = setOf("lrc", "txt", "srt")
 
     suspend fun lyricsFor(track: Track): LyricsResult? = withContext(Dispatchers.IO) {
         synchronized(cache) { if (cache.containsKey(track.id)) return@withContext cache[track.id] }
@@ -31,46 +35,107 @@ class LyricsRepository {
     fun clear() = synchronized(cache) { cache.clear() }
 
     private fun findLyrics(track: Track): LyricsResult? {
-        val file = track.filePath.takeIf { it.isNotBlank() }?.let { File(it) } ?: return null
-        val folder = file.parentFile?.takeIf { it.canRead() } ?: return null
-        val base = file.nameWithoutExtension
+        val audio = track.filePath.takeIf { it.isNotBlank() }?.let { File(it) } ?: return null
+        val folder = audio.parentFile?.takeIf { it.canRead() } ?: return null
+        val base = cleanName(audio.nameWithoutExtension)
         val title = cleanName(track.title)
-        val artistTitle = cleanName("${track.artist} - ${track.title}")
-        val candidates = buildList {
-            add(File(folder, "$base.lrc")); add(File(folder, "$base.txt"))
-            add(File(folder, "${track.title}.lrc")); add(File(folder, "${track.title}.txt"))
-            add(File(folder, "${track.artist} - ${track.title}.lrc")); add(File(folder, "${track.artist} - ${track.title}.txt"))
-            add(File(folder, "$title.lrc")); add(File(folder, "$title.txt"))
-            add(File(folder, "$artistTitle.lrc")); add(File(folder, "$artistTitle.txt"))
-            add(File(folder, "lyrics/$base.lrc")); add(File(folder, "lyrics/$base.txt"))
-            add(File(folder, "Lyrics/$base.lrc")); add(File(folder, "Lyrics/$base.txt"))
-        }.distinctBy { it.absolutePath.lowercase() }
-        candidates.firstOrNull { it.isFile && it.length() in 1..512_000L }?.let { return parse(it) }
+        val artist = cleanName(track.artist)
+        val album = cleanName(track.album)
+        val artistTitle = cleanName("$artist - $title")
 
-        // Fuzzy fallback: scan nearby lyric files and prefer title/filename matches.
-        val normalizedTitle = title.normalizeKey()
-        val normalizedBase = base.normalizeKey()
-        return folder.listFiles { f -> f.isFile && f.extension.lowercase() in setOf("lrc", "txt") }
-            ?.mapNotNull { f ->
-                val key = f.nameWithoutExtension.normalizeKey()
-                val score = when {
-                    key == normalizedBase -> 100
-                    key == normalizedTitle -> 95
-                    key.contains(normalizedTitle) || normalizedTitle.contains(key) -> 75
-                    key.contains(normalizedBase) || normalizedBase.contains(key) -> 65
-                    else -> 0
-                }
-                if (score > 0 && f.length() in 1..512_000L) score to f else null
-            }
-            ?.maxByOrNull { it.first }
-            ?.second
+        // Uploaded-app style: exact same-name and title/artist-title sidecars first,
+        // in the song folder and common nested Lyrics folders.
+        exactFiles(folder, base, title, artistTitle).firstOrNull { isUsableLyricFile(it) }
+            ?.let { return parse(it) }
+
+        // Then scan a small local lyrics graph: current folder, nested Lyrics folders,
+        // and a sibling/parent Lyrics folder used by many Android music players.
+        val keys = listOf(base, title, artistTitle, "$artist$title", "$title$artist", album)
+            .map { it.normalizeKey() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        return lyricRoots(folder)
+            .flatMap { root -> scanLyrics(root, maxDepth = if (root == folder) 1 else 2) }
+            .mapNotNull { f -> scoreCandidate(f, keys)?.let { LyricsCandidate(f, it) } }
+            .maxWithOrNull(compareBy<LyricsCandidate> { it.score }.thenByDescending { it.file.length() })
+            ?.file
             ?.let { parse(it) }
     }
 
+    private fun exactFiles(folder: File, base: String, title: String, artistTitle: String): List<File> {
+        val roots = lyricRoots(folder)
+        val names = listOf(base, title, artistTitle).filter { it.isNotBlank() }.distinct()
+        return roots.flatMap { root ->
+            names.flatMap { name -> extensions.map { ext -> File(root, "$name.$ext") } }
+        }.distinctBy { it.absolutePath.lowercase() }
+    }
+
+    private fun lyricRoots(folder: File): List<File> = buildList {
+        add(folder)
+        listOf("lyrics", "Lyrics", ".lyrics", "LRC", "lrc").forEach { add(File(folder, it)) }
+        folder.parentFile?.let { parent ->
+            listOf("lyrics", "Lyrics", ".lyrics", "LRC", "lrc").forEach { add(File(parent, it)) }
+        }
+    }.filter { it.isDirectory && it.canRead() }.distinctBy { it.absolutePath.lowercase() }
+
+    private fun scanLyrics(root: File, maxDepth: Int): List<File> {
+        val out = ArrayList<File>(64)
+        fun walk(dir: File, depth: Int) {
+            if (depth > maxDepth || out.size > 700) return
+            val files = runCatching { dir.listFiles() }.getOrNull() ?: return
+            for (f in files) {
+                when {
+                    f.isFile && isUsableLyricFile(f) -> out += f
+                    f.isDirectory && depth < maxDepth && f.name.length < 80 -> walk(f, depth + 1)
+                }
+                if (out.size > 700) return
+            }
+        }
+        walk(root, 0)
+        return out
+    }
+
+    private fun isUsableLyricFile(file: File): Boolean =
+        file.extension.lowercase() in extensions && file.length() in 1..768_000L
+
+    private fun scoreCandidate(file: File, keys: List<String>): Int? {
+        val key = file.nameWithoutExtension.normalizeKey()
+        if (key.isBlank()) return null
+        val best = keys.maxOfOrNull { wanted ->
+            when {
+                key == wanted -> 150
+                key.contains(wanted) || wanted.contains(key) -> 105
+                tokenOverlap(key, wanted) >= 0.72f -> 82
+                tokenOverlap(key, wanted) >= 0.52f -> 54
+                else -> 0
+            }
+        } ?: 0
+        if (best <= 0) return null
+        val extBoost = when (file.extension.lowercase()) {
+            "lrc" -> 22
+            "srt" -> 18
+            else -> 6
+        }
+        val folderBoost = if (file.parentFile?.name?.contains("lyric", ignoreCase = true) == true ||
+            file.parentFile?.name?.equals("lrc", ignoreCase = true) == true) 8 else 0
+        return best + extBoost + folderBoost
+    }
+
     private fun parse(file: File): LyricsResult? = try {
-        val text = file.readText(Charsets.UTF_8).ifBlank { file.readText(Charsets.ISO_8859_1) }
+        val text = readTextFlexible(file)
+        when (file.extension.lowercase()) {
+            "srt" -> parseSrt(file.name, text) ?: parseText(file.name, text)
+            "lrc" -> parseLrc(file.name, text) ?: parseText(file.name, text)
+            else -> parseLrc(file.name, text) ?: parseSrt(file.name, text) ?: parseText(file.name, text)
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun parseLrc(source: String, text: String): LyricsResult? {
         val lines = ArrayList<LyricsLine>()
-        val timeRegex = Regex("\\[(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+        val timeRegex = Regex("\\[(?:(\\d{1,2}):)?(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?]")
+        val enhancedWordTimeRegex = Regex("<(?:(\\d{1,2}):)?(\\d{1,3}):(\\d{2})(?:[.:](\\d{1,3}))?>")
         val offsetMs = Regex("\\[offset:([+-]?\\d+)]", RegexOption.IGNORE_CASE)
             .find(text)
             ?.groupValues
@@ -79,39 +144,103 @@ class LyricsRepository {
             ?: 0L
         text.lineSequence().forEach { raw ->
             val matches = timeRegex.findAll(raw).toList()
-            val lyric = raw.replace(timeRegex, "").trim()
+            val lyric = raw
+                .replace(timeRegex, "")
+                .replace(enhancedWordTimeRegex, "")
+                .replace(Regex("\\[[a-zA-Z]+:.*?]"), "")
+                .trim()
             if (matches.isNotEmpty() && lyric.isNotBlank()) {
                 matches.forEach { m ->
-                    val min = m.groupValues[1].toLongOrNull() ?: 0L
-                    val sec = m.groupValues[2].toLongOrNull() ?: 0L
-                    val frac = m.groupValues[3]
-                    val ms = when (frac.length) {
-                        0 -> 0L
-                        1 -> frac.toLong() * 100L
-                        2 -> frac.toLong() * 10L
-                        else -> frac.take(3).toLong()
-                    }
-                    lines += LyricsLine((min * 60_000L + sec * 1000L + ms + offsetMs).coerceAtLeast(0L), lyric)
+                    lines += LyricsLine((parseBracketTime(m.groupValues) + offsetMs).coerceAtLeast(0L), lyric)
                 }
             }
         }
-        if (lines.isNotEmpty()) {
-            LyricsResult(file.name, timed = true, lines = lines.sortedBy { it.timeMs }, plainText = text)
-        } else {
-            val plain = text.lines()
-                .map { it.trim() }
-                .filter { it.isNotBlank() && !it.startsWith("[") }
-                .joinToString("\n")
-            if (plain.isBlank()) null else LyricsResult(file.name, timed = false, lines = emptyList(), plainText = plain)
-        }
-    } catch (e: Exception) {
-        null
+        return if (lines.isNotEmpty()) {
+            val sorted = lines.sortedWith(compareBy<LyricsLine> { it.timeMs }.thenBy { it.text })
+            LyricsResult(source, timed = true, lines = sorted, plainText = sorted.joinToString("\n") { it.text })
+        } else null
     }
+
+    private fun parseSrt(source: String, text: String): LyricsResult? {
+        val blockRegex = Regex(
+            "(?ms)^\\s*(?:\\d+\\s*)?\\R?(\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3})\\s*-->\\s*(\\d{1,2}:\\d{2}:\\d{2}[,.]\\d{1,3}).*?\\R(.*?)(?=\\R\\s*\\R|\\z)"
+        )
+        val lines = blockRegex.findAll(text).mapNotNull { match ->
+            val time = parseSrtTime(match.groupValues[1])
+            val lyric = match.groupValues[3]
+                .lines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.all(Char::isDigit) }
+                .joinToString(" ")
+                .replace(Regex("<[^>]+>"), "")
+                .trim()
+            lyric.takeIf { it.isNotBlank() }?.let { LyricsLine(time, it) }
+        }.toList()
+        return if (lines.isNotEmpty()) {
+            LyricsResult(source, timed = true, lines = lines.sortedBy { it.timeMs }, plainText = lines.joinToString("\n") { it.text })
+        } else null
+    }
+
+    private fun parseText(source: String, text: String): LyricsResult? {
+        val plain = text.lines()
+            .map { it.trim() }
+            .filter { line ->
+                line.isNotBlank() &&
+                    !line.startsWith("[") &&
+                    !line.contains("-->") &&
+                    !line.all { it.isDigit() }
+            }
+            .joinToString("\n")
+        return if (plain.isBlank()) null else LyricsResult(source, timed = false, lines = emptyList(), plainText = plain)
+    }
+
+    private fun parseBracketTime(groups: List<String>): Long {
+        val hours = groups.getOrNull(1)?.takeIf { it.isNotBlank() }?.toLongOrNull() ?: 0L
+        val min = groups.getOrNull(2)?.toLongOrNull() ?: 0L
+        val sec = groups.getOrNull(3)?.toLongOrNull() ?: 0L
+        val frac = groups.getOrNull(4).orEmpty()
+        val ms = when (frac.length) {
+            0 -> 0L
+            1 -> frac.toLong() * 100L
+            2 -> frac.toLong() * 10L
+            else -> frac.take(3).toLong()
+        }
+        return hours * 3_600_000L + min * 60_000L + sec * 1000L + ms
+    }
+
+    private fun parseSrtTime(value: String): Long {
+        val parts = value.replace(',', '.').split(':', '.')
+        val h = parts.getOrNull(0)?.toLongOrNull() ?: 0L
+        val m = parts.getOrNull(1)?.toLongOrNull() ?: 0L
+        val s = parts.getOrNull(2)?.toLongOrNull() ?: 0L
+        val ms = parts.getOrNull(3)?.padEnd(3, '0')?.take(3)?.toLongOrNull() ?: 0L
+        return h * 3_600_000L + m * 60_000L + s * 1000L + ms
+    }
+
+    private fun readTextFlexible(file: File): String =
+        runCatching { file.readText(Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: runCatching { file.readText(Charsets.UTF_16) }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: file.readText(Charsets.ISO_8859_1)
 
     private fun cleanName(value: String): String = value
         .replace(Regex("[\\\\/:*?\"<>|]"), " ")
         .replace(Regex("\\s+"), " ")
         .trim()
+
+    private fun tokenOverlap(a: String, b: String): Float {
+        if (a.isBlank() || b.isBlank()) return 0f
+        val shorter = minOf(a.length, b.length).coerceAtLeast(1)
+        var common = 0
+        val seen = BooleanArray(b.length)
+        for (ch in a) {
+            val idx = b.indexOf(ch)
+            if (idx >= 0 && !seen[idx]) {
+                seen[idx] = true
+                common++
+            }
+        }
+        return common.toFloat() / shorter
+    }
 
     private fun String.normalizeKey(): String = Normalizer.normalize(this, Normalizer.Form.NFD)
         .replace(Regex("\\p{Mn}+"), "")

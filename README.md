@@ -21,6 +21,13 @@ No account. No ads. No internet permission — your music never leaves your phon
 > (each CI build is signed with a fresh debug key, so Android will otherwise block the update
 > with an "app not installed" signature error).
 
+## v1.0.20 v1.0.14 lyrics style, uploaded-app-style lyric scanner and playback crash guard
+
+- **Lyrics view style restored from v1.0.14:** lyrics are back inside the glossy feature scaffold/glass panel with the v1.0.14 active-line rounded highlight, source label, alpha/scale/slide motion and compact synced list style.
+- **Lyrics framework strengthened:** the local lyrics scanner now uses an uploaded-app-style provider pipeline: exact sidecars, nested `Lyrics`/`lyrics`/`LRC` folders, parent lyrics folders, fuzzy filename matching, `.lrc`, enhanced LRC cleanup, `.srt` timestamps and plain text fallback.
+- **Plain lyrics still move:** non-timestamped text lyrics are auto-timed across the song duration, while real LRC/SRT files use exact timestamps.
+- **Playback crash guard:** `SpatializerProcessor` now catches malformed Huawei/Codec2 buffer failures and falls back to unprocessed stereo for that buffer instead of throwing `ExoPlayer.error(1004)` and stopping playback.
+
 ## v1.0.19 visible lyrics and audible AutoMix follow-up
 
 This build addresses the “nothing changed” feedback directly:
